@@ -1,0 +1,475 @@
+# Ngân hàng câu hỏi phỏng vấn — Cloud Engineer (Middle)
+
+Tổng cộng **70 câu hỏi** + **5 mẫu giới thiệu bản thân**.
+
+---
+
+## Mục lục
+
+- [Giới thiệu bản thân](#giới-thiệu-bản-thân)
+- [Dự án thực tế](#dự-án-thực-tế) — 18 câu
+- [Kỹ thuật](#kỹ-thuật) — 35 câu
+- [Hành vi & Kỹ năng mềm](#hành-vi-kỹ-năng-mềm) — 12 câu
+- [Thiết kế hệ thống](#thiết-kế-hệ-thống) — 5 câu
+
+---
+
+## Giới thiệu bản thân
+
+### SI01 — General / default opening
+
+Tôi là Cloud Engineer tại FPT Software, khoảng 2.5 năm làm AWS và 5 năm backend với Java. Tôi có chứng chỉ AWS SAA. Phần lớn công việc là infrastructure as code với Terraform, cùng ECS, S3, IAM và CloudWatch. Tôi thích các task nằm giữa application và infrastructure, vì nền backend giúp tôi hiểu cả hai phía.
+
+### SI02 — Security-oriented (for security-heavy roles)
+
+Tôi là Cloud Engineer với 2.5 năm AWS. Nhiều công việc gần đây thiên về bảo mật: tinh chỉnh AWS WAF managed rules để giảm false positive, khóa S3 bằng Origin Access Control, và thiết kế IAM role cross-account. Trước khi làm cloud tôi có 5 năm viết Java, nên tôi hiểu ứng dụng thực sự cần gì trước khi siết quyền.
+
+### SI03 — Data & migration oriented
+
+Tôi là Cloud Engineer tập trung vào AWS, nền tảng backend Java. Dự án gần nhất là migrate database từ Aurora MySQL sang Aurora PostgreSQL. Chúng tôi dùng snapshot restore, transform dữ liệu qua S3 làm staging layer, rồi load bằng extension aws_s3. Tôi cũng làm việc với Athena để phân tích log và xây data pipeline trên ECS và Step Functions.
+
+### SI04 — DevOps / automation oriented (your future direction)
+
+Tôi là Cloud Engineer đang hướng sang DevOps. Tôi xây hạ tầng bằng Terraform và chạy CI/CD pipeline trên GitHub Actions, gồm cả self-hosted runner trong VPC để job truy cập được resource private. Tôi làm việc với Docker và ECS Fargate hàng ngày. Hiện tôi đang học sâu hơn về Linux và networking, vì tôi muốn vững nền tảng chứ không chỉ biết dùng AWS console.
+
+### SI05 — Growth / learning oriented (good for culture-fit rounds)
+
+Tôi là Cloud Engineer tại FPT Software, khoảng 2.5 năm AWS sau 5 năm backend Java. Điều tôi thích nhất là troubleshooting — ví dụ query Athena đột nhiên trả 0 rows và tôi lần ra nguyên nhân là log format thay đổi. Ngoài giờ làm tôi học Linux, Docker và networking. Tôi muốn phát triển lên vai trò DevOps nên đang xây nền tảng từ bây giờ.
+
+---
+
+## Dự án thực tế
+
+### Q001 — Trong task WAF, bạn chạy managed rules ở count mode trước. Tại sao không chuyển thẳng sang block mode?
+
+> `waf` · độ khó 2/3
+
+Chúng tôi dùng AWS Managed Rules nhưng không biết API nào sẽ bị match. Một số endpoint gửi request body trên 8KB nên bị SizeRestrictions_BODY bắt. Bật block mode ngay sẽ gây false positive trên production. Vì vậy chúng tôi dùng count mode trước. Rule vẫn gắn label nhưng không chặn. Sau đó tôi kiểm tra WAF logs trên Athena để xem URI nào match.
+
+### Q002 — Giải thích cơ chế label hoạt động thế nào trong setup WAF của bạn?
+
+> `waf` · độ khó 3/3
+
+Đầu tiên tôi dùng rule_action_override để đổi một sub-rule sang count. Rule vẫn chạy và vẫn gắn label, chỉ là không chặn. Label đó theo request. Sau đó tôi thêm custom rule phía sau. Rule này match theo label nhưng loại trừ các URI được whitelist. Nên mọi thứ có label sẽ bị chặn, trừ API của chúng tôi. Thứ tự rule rất quan trọng.
+
+### Q003 — Query Athena đột nhiên trả về 0 rows. Kể tôi nghe bạn tìm ra nguyên nhân gốc thế nào?
+
+> `athena` · độ khó 3/3
+
+Query trả 0 rows nhưng file log vẫn đổ về S3. Nghĩa là ingestion ổn, vấn đề ở parsing. Tôi tải một file cũ và một file mới rồi so sánh. AWS đã thêm field mới vào cuối mỗi dòng. Bảng của chúng tôi dùng RegexSerDe vốn cần số cột cố định. Khi dòng không match, Athena âm thầm bỏ record. Tôi thêm nhóm catch-all vào cuối regex.
+
+### Q004 — Bạn sẽ phòng ngừa vấn đề log format đó tái diễn thế nào?
+
+> `athena` · độ khó 2/3
+
+Ba điều. Thứ nhất, viết regex theo hướng khoan dung, có catch-all ở cuối. Thứ hai, thêm CloudWatch alarm khi số dòng mỗi ngày về 0, để phát hiện trong vài giờ chứ không phải vài tuần. Thứ ba, nếu format log cho phép thì chuyển sang SerDe hiểu schema như JSON thay vì regex, vì nó không phụ thuộc thứ tự cột.
+
+### Q005 — Tại sao bạn export dữ liệu ra S3 dạng CSV thay vì nối trực tiếp MySQL với PostgreSQL?
+
+> `migration` · độ khó 2/3
+
+Hai engine khác nhau, và schema đã đổi do re-architecture. Nên đây không phải copy. Chúng tôi phải map entity và làm sạch dữ liệu. Chuyển trực tiếp thì tôi không kiểm tra được kết quả. Dùng S3 làm staging layer giúp tách rời export và import. Nếu import lỗi, tôi chạy lại mà không phải động vào nguồn. Sau đó tôi load bằng extension aws_s3.
+
+### Q006 — Tại sao bạn tạo index sau khi load dữ liệu thay vì trước?
+
+> `migration` · độ khó 2/3
+
+Nếu bảng đã có index, mỗi dòng insert đều phải cập nhật index. Với bulk load thì rất chậm. Nếu load trước rồi tạo index một lần ở cuối, database làm được trong một lượt. Sau đó tôi chạy ANALYZE để làm mới statistics, vì query planner cần statistics mới để chọn plan tốt. Rồi tôi kiểm tra hiệu năng query.
+
+### Q007 — Bạn xác minh migration đúng bằng cách nào?
+
+> `migration` · độ khó 3/3
+
+Nhiều tầng. Thứ nhất, so sánh row count từng bảng giữa nguồn và đích. Thứ hai, tôi kiểm tra mẫu các bảng nghiệp vụ quan trọng. Thứ ba, tôi xem việc chuyển đổi kiểu dữ liệu, vì MySQL và PostgreSQL xử lý boolean và date khác nhau. Thứ tư, chúng tôi chạy query thật của ứng dụng và so sánh kết quả. Cuối cùng tôi kiểm tra hiệu năng query sau khi tạo index.
+
+### Q008 — Tại sao dùng Step Functions giữa EventBridge và ECS thay vì để EventBridge chạy task trực tiếp?
+
+> `batch` · độ khó 2/3
+
+EventBridge có thể chạy ECS task, nhưng về cơ bản là fire-and-forget — nó không chờ và không biết task lỗi hay không. Step Functions theo dõi trạng thái task đến khi xong, và có retry sẵn kèm backoff. Nó cũng cho execution history, giúp debug dễ hơn nhiều. Nếu sau này cần thêm bước, chúng tôi thêm được mà không phải viết lại trigger.
+
+### Q009 — Giải thích cơ chế upload S3 cross-account trong hệ thống batch của bạn.
+
+> `batch` · độ khó 3/3
+
+ECS task chạy với task role trong account của chúng tôi. Ở account đích có role thứ hai tin cậy account chúng tôi. Code Java gọi sts:AssumeRole lên role đó và nhận temporary credentials. Nó dùng credentials này để upload file. Chi tiết quan trọng là object ownership — nếu cấu hình sai, chủ bucket không đọc được file vừa upload.
+
+### Q010 — Tại sao bạn để credentials database trong SSM Parameter Store thay vì environment variable?
+
+> `batch` · độ khó 2/3
+
+Environment variable được lưu trong task definition, nên ai có quyền console đều đọc được, và thường lọt vào Terraform state hoặc git. Với SSM Parameter Store, giá trị được lấy lúc runtime và mã hóa được bằng KMS. Chúng tôi có thể xoay vòng secret mà không cần deploy lại container. Quyền truy cập do IAM kiểm soát nên tôi giới hạn được role nào đọc parameter nào.
+
+### Q011 — Bạn dùng CloudFront Functions thay vì Lambda@Edge. Điều gì khiến đó là lựa chọn đúng?
+
+> `edge` · độ khó 3/3
+
+Logic của chúng tôi rất nhẹ — một redirect, một HTTP 426, và một JSON nhỏ. CloudFront Functions chạy ngay tại edge location, dưới một mili-giây, và rẻ hơn nhiều. Lambda@Edge chạy ở regional edge cache nên thêm độ trễ. Hạn chế là CloudFront Functions không gọi được network. Chúng tôi không cần nên hạn chế đó không ảnh hưởng.
+
+### Q012 — Origin Access Control bảo vệ S3 bucket của bạn thế nào?
+
+> `edge` · độ khó 2/3
+
+Không có nó, người ta có thể vào thẳng URL S3 và bỏ qua CloudFront, nghĩa là bỏ qua luôn WAF và cache. Với Origin Access Control, CloudFront ký request gửi tới S3. Bucket policy khi đó chỉ cho phép request từ đúng distribution đó, dùng điều kiện aws:SourceArn. Nên bucket ở chế độ private và mọi traffic buộc phải đi qua CloudFront.
+
+### Q013 — Tại sao upload file vào staging prefix thay vì thẳng vào prefix của Adobe Analytics?
+
+> `transfer-family` · độ khó 2/3
+
+Nếu người dùng upload thẳng vào prefix thật, file lỗi sẽ đi thẳng vào quy trình import và chúng tôi không chặn được. Với staging prefix, workflow của Transfer Family chạy sau khi upload xong. Một Lambda kiểm tra kích thước file, Lambda khác đổi tên theo naming convention và di chuyển file. Nên chỉ file đã được kiểm mới tới prefix mà Adobe Analytics đọc.
+
+### Q014 — Home directory mapping trong AWS Transfer Family hoạt động thế nào và tại sao bạn dùng nó?
+
+> `transfer-family` · độ khó 2/3
+
+Mỗi user được map tới prefix S3 riêng. Phía SFTP họ chỉ thấy thư mục gốc là dấu gạch chéo. Họ không thấy đường dẫn thật của bucket và không duyệt được thư mục của khách khác. Cách này cho cô lập theo tenant mà không cần tạo bucket riêng cho từng khách. Nó cũng giữ trải nghiệm y như FTP cũ, điều này quan trọng vì người dùng vẫn dùng WinSCP.
+
+### Q015 — Bạn đã có RDS automated backup rồi. Tại sao còn thêm AWS Backup?
+
+> `backup` · độ khó 2/3
+
+RDS point-in-time recovery chỉ tối đa 35 ngày. Cái đó lo được lỗi vận hành, nhưng yêu cầu compliance là lưu dài hạn 5 năm. AWS Backup cho phép định nghĩa hai rule — daily giữ 30 ngày, monthly giữ 5 năm — trong một vault tập trung. Nó cũng cho một chỗ duy nhất để audit toàn bộ backup thay vì kiểm từng database riêng.
+
+### Q016 — Bạn dùng Backup Vault Lock ở Governance mode. Nó làm gì, và tại sao không dùng Compliance mode?
+
+> `backup` · độ khó 3/3
+
+Vault Lock ngăn việc xóa backup sớm, kể cả xóa nhầm. Ở Governance mode, admin có quyền đặc biệt vẫn override được. Ở Compliance mode, không ai đổi được — kể cả root account — cho tới khi lock hết hạn. Chúng tôi mới vận hành 6 tháng đầu nên cấu hình còn thay đổi. Compliance mode không thể đảo ngược nên quá rủi ro ở giai đoạn đó.
+
+### Q017 — Giải thích thiết kế log retention và tại sao export CloudWatch Logs sang S3?
+
+> `backup` · độ khó 2/3
+
+Chúng tôi chỉ giữ 30 ngày trong CloudWatch vì lưu trữ CloudWatch đắt cho dữ liệu dài hạn. Mỗi ngày EventBridge kích hoạt một Lambda gọi CreateExportTask để đẩy log sang S3. Trên S3 chúng tôi dùng lifecycle policy: Standard 30 ngày, rồi Standard-IA 90 ngày, rồi Glacier cho phần còn lại, tổng cộng một năm. Nên vẫn giữ được log mà trả ít tiền hơn nhiều.
+
+### Q018 — Mô tả chiến lược rollback khi deployment thất bại.
+
+> `backup` · độ khó 2/3
+
+Hai tầng. Với ứng dụng, ECR giữ ba image gần nhất nên chúng tôi deploy lại phiên bản trước rất nhanh. Với dữ liệu, pipeline tạo RDS snapshot trước mỗi lần release và giữ ba bản gần nhất. Rollback code thì nhanh. Rollback dữ liệu mới là phần khó, vì restore snapshot mất thời gian và mất hết dữ liệu ghi sau đó. Nên đó là phương án cuối cùng.
+
+---
+
+## Kỹ thuật
+
+### Q019 — Bạn thêm aws:SourceAccount vào bucket policy cho CloudWatch Logs export. Điều kiện đó ngăn vấn đề gì?
+
+> `iam` · độ khó 2/3
+
+Policy cấp quyền cho service principal logs.<region>.amazonaws.com. Principal này không gắn với account nào cụ thể. Nếu không có condition, CloudWatch Logs ở bất kỳ account nào cũng export được vào bucket của tôi. Đó là confused deputy problem — một service đáng tin bị lợi dụng để hành động thay kẻ khác. aws:SourceAccount thu hẹp quyền xuống đúng một account ID.
+
+### Q020 — Khác biệt giữa identity-based policy và resource-based policy là gì?
+
+> `iam` · độ khó 2/3
+
+Identity-based policy gắn vào user hoặc role và nói identity đó làm được gì. Resource-based policy gắn vào chính resource và nói ai được truy cập nó. Chỉ resource-based mới có trường Principal. Với truy cập cross-account, thường cả hai phía đều phải cho phép. S3 bucket policy là ví dụ phổ biến nhất.
+
+### Q021 — IAM đánh giá một request thế nào khi có nhiều policy?
+
+> `iam` · độ khó 3/3
+
+Mặc định mọi thứ là implicit deny. IAM kiểm tra explicit Deny trước — nếu tìm thấy ở bất kỳ đâu thì request bị từ chối và không gì ghi đè được. Sau đó nó tìm Allow. Nếu không có Allow, request vẫn bị từ chối. Ngoài ra, service control policy và permission boundary chỉ giới hạn được chứ không bao giờ cấp quyền.
+
+### Q022 — Tại sao EC2 nên dùng IAM role thay vì access key?
+
+> `iam` · độ khó 2/3
+
+Access key là loại dài hạn và phải lưu ở đâu đó — file config, biến môi trường, hoặc tệ hơn là trong git. Role cấp cho instance temporary credentials qua instance metadata service, và chúng tự xoay vòng. Nếu cần thu hồi quyền, tôi đổi role và có hiệu lực ngay, không phải deploy lại và không có key nào phải dọn.
+
+### Q023 — Object Ownership đặt là BucketOwnerEnforced thực chất làm gì?
+
+> `s3` · độ khó 2/3
+
+Nó vô hiệu hóa hoàn toàn ACL. Chủ bucket tự động sở hữu mọi object, kể cả object do account khác ghi vào. Điều này tránh vấn đề kinh điển: account A upload file mà account B là chủ bucket lại không đọc được object của chính mình. Sau đó quyền truy cập chỉ do policy kiểm soát, đơn giản hơn và là mặc định AWS khuyến nghị.
+
+### Q024 — Kể các S3 storage class bạn dùng cho log trong một năm.
+
+> `s3` · độ khó 2/3
+
+Standard cho 30 ngày đầu vì đó là lúc chúng tôi thực sự query log. Sau đó Standard-IA, lưu rẻ hơn nhưng tính phí khi lấy ra. Rồi Glacier cho phần còn lại của năm, rẻ nhất nhưng restore mất thời gian. Lifecycle policy tự động chuyển object. Một điểm cần lưu ý là thời gian lưu tối thiểu ở các class lạnh.
+
+### Q025 — Khi nào bạn chọn ECS Fargate thay vì EC2 launch type?
+
+> `ecs` · độ khó 2/3
+
+Fargate nghĩa là không có server phải vá lỗi và không phải quản lý capacity cụm. Điều đó hợp với batch chạy mỗi ngày một lần, vì dùng EC2 thì phải trả tiền cho instance nhàn rỗi. EC2 launch type tốt hơn khi mức dùng ổn định và cao, vì rẻ hơn ở quy mô lớn, hoặc khi cần kiểm soát nhiều hơn — GPU, kernel riêng, hay daemon container.
+
+### Q026 — Khác biệt giữa ECS task role và task execution role là gì?
+
+> `ecs` · độ khó 3/3
+
+Execution role được ECS dùng, trước khi container khởi động — để pull image từ ECR và tạo log stream trong CloudWatch. Task role được ứng dụng bên trong container dùng, khi nó gọi S3 hay SSM. Nếu nhầm hai cái, bạn sẽ gặp lỗi không pull được image lúc khởi động, hoặc access denied lúc chạy.
+
+### Q027 — Retry trong Step Functions hoạt động thế nào, và khi nào retry là ý tồi?
+
+> `stepfunctions` · độ khó 2/3
+
+Bạn định nghĩa khối Retry với loại lỗi, khoảng chờ, số lần tối đa và hệ số backoff. Nó hợp với lỗi tạm thời như throttling hay timeout mạng. Nó dở với lỗi vĩnh viễn — config sai hay dữ liệu không hợp lệ sẽ lỗi y hệt mọi lần, chỉ tốn thời gian. Nó cũng nguy hiểm nếu job không idempotent, vì retry có thể tạo dữ liệu trùng.
+
+### Q028 — Khác biệt giữa Aurora writer endpoint và reader endpoint là gì?
+
+> `aurora` · độ khó 2/3
+
+Writer endpoint luôn trỏ tới instance primary hiện tại. Nếu xảy ra failover, nó tự động theo primary mới nên ứng dụng không phải đổi gì. Reader endpoint phân tải đọc qua các replica. Điều cần cẩn thận là replication lag — nếu bạn ghi rồi đọc ngay từ reader endpoint, có thể không thấy dữ liệu vừa ghi.
+
+### Q029 — Làm sao giảm chi phí một query Athena?
+
+> `athena` · độ khó 2/3
+
+Athena tính tiền theo lượng dữ liệu quét, nên mục tiêu là quét ít đi. Thứ nhất, phân vùng bảng theo ngày để query chỉ đọc prefix cần thiết. Thứ hai, dùng định dạng cột như Parquet để chỉ đọc những cột bạn chọn. Thứ ba, nén file. Và tránh SELECT * — chọn hết cột thì mất luôn lợi ích của định dạng cột.
+
+### Q030 — Cache của CloudFront hoạt động thế nào và invalidate nó ra sao?
+
+> `cloudfront` · độ khó 2/3
+
+CloudFront lưu response tại edge, đánh dấu bằng cache key — đường dẫn cộng với header hoặc query string mà bạn chọn đưa vào. TTL lấy từ cache policy hoặc header của origin. Để buộc làm mới, bạn tạo invalidation, nhưng làm thường xuyên thì tốn tiền. Cách tốt hơn là đặt tên file có phiên bản, khi đó bản mới đơn giản là một cache key mới.
+
+### Q031 — Cold start của Lambda là gì và giảm nó thế nào?
+
+> `lambda` · độ khó 2/3
+
+Cold start xảy ra khi Lambda phải tạo môi trường chạy mới — tải code, khởi động runtime, chạy phần khởi tạo. Nó tệ hơn với package lớn hoặc runtime nặng như JVM. Để giảm: giữ package nhỏ, đưa phần setup như database client ra ngoài handler để tái sử dụng, và nếu độ trễ thực sự quan trọng thì dùng provisioned concurrency, dù nó tốn tiền.
+
+### Q032 — Bạn sẽ thiết lập cảnh báo cho batch phải xong trước 6 giờ sáng thế nào?
+
+> `monitoring` · độ khó 2/3
+
+Thứ nhất, CloudWatch alarm trên metric số execution thất bại của Step Functions, gửi qua SNS rồi tới Slack. Thứ hai, alarm trên thời gian chạy, để lần chạy chậm cảnh báo trước hạn. Trường hợp khó hơn là job không chạy lần nào — alarm lỗi sẽ không kêu vì có gì lỗi đâu. Cho tình huống đó tôi thêm một kiểm tra lúc 6 giờ sáng, báo động nếu không có lần chạy thành công nào.
+
+### Q033 — Mã hóa KMS cho một object S3 hoạt động thế nào, nói đơn giản?
+
+> `kms` · độ khó 2/3
+
+Master key nằm trong KMS và không bao giờ ra khỏi đó. Khi upload, S3 xin KMS một data key, mã hóa object bằng key đó, và lưu data key đã mã hóa cạnh object. Để đọc object, S3 nhờ KMS giải mã data key đó. Kết quả thực tế là người đọc cần hai quyền — quyền đọc S3 và quyền decrypt của KMS.
+
+### Q034 — Ai đó sửa tay resource trên console. Lần terraform apply tiếp theo sẽ ra sao?
+
+> `terraform` · độ khó 3/3
+
+Terraform làm mới state và thấy sự khác biệt. Plan sẽ hiện rằng nó muốn đưa thay đổi thủ công về đúng như trong code. Sự khác biệt đó gọi là configuration drift. Cách sửa đúng không phải cãi với Terraform mà là đưa thay đổi vào code. Để phòng ngừa, chúng tôi hạn chế quyền ghi trên console và để CI là con đường duy nhất chạy apply.
+
+### Q035 — Tại sao Terraform state cần lưu từ xa và có locking?
+
+> `terraform` · độ khó 2/3
+
+File state ánh xạ code sang resource thật. Nếu nó chỉ nằm trên máy tôi thì không ai khác apply được, và mất file là mất dấu mọi thứ. Remote backend như S3 chia sẻ nó cho cả team và CI. State locking quan trọng vì nếu hai người apply cùng lúc, state có thể hỏng và resource bị tạo trùng hoặc bị xóa.
+
+### Q036 — Khác biệt giữa EventBridge Scheduler và EventBridge rule là gì?
+
+> `eventbridge` · độ khó 2/3
+
+EventBridge rule nằm trên event bus và phản ứng với event — ví dụ ECS task đổi trạng thái. Nó cũng chạy theo lịch được nhưng đó là tính năng phụ. EventBridge Scheduler được thiết kế riêng cho lịch chạy. Nó hỗ trợ múi giờ, lịch chạy một lần, khung thời gian linh hoạt và cấu hình retry riêng. Với batch hằng ngày, Scheduler hợp hơn.
+
+### Q037 — AWS Config dùng để làm gì và khác CloudTrail thế nào?
+
+> `awsconfig` · độ khó 2/3
+
+CloudTrail ghi lại ai làm gì — là lịch sử lệnh gọi API. AWS Config ghi lại resource trông như thế nào theo thời gian và đánh giá theo các rule tuân thủ. Nên CloudTrail trả lời ai đã xóa cấu hình, còn Config trả lời cấu hình hiện tại có sai không. Ở dự án của tôi, Config theo dõi cấu hình backup và retention, cảnh báo đi qua SNS tới Slack.
+
+### Q038 — Khác biệt giữa security group và network ACL là gì?
+
+> `networking` · độ khó 2/3
+
+Chúng làm việc ở tầng khác nhau. Security group gắn vào network interface nên bảo vệ một resource. Network ACL làm việc ở tầng subnet. Khác biệt then chốt: security group là stateful — cho traffic vào thì chiều trả về tự động ra được. NACL là stateless nên phải viết cả hai chiều. NACL cũng deny tường minh được, và rule xét theo số, khớp đầu tiên thắng.
+
+### Q039 — Tại sao NACL cần rule cho ephemeral port còn security group thì không?
+
+> `networking` · độ khó 3/3
+
+Khi client mở kết nối, nó chọn một cổng cao ngẫu nhiên làm cổng nguồn, thường trên 1024. Server trả lời về đúng cổng đó. Security group là stateful nên nhớ kết nối và tự cho gói trả về đi qua. NACL là stateless — mỗi gói được xét riêng. Nên gói trả về trông như traffic mới, và bạn phải cho phép dải ephemeral port ở chiều ra một cách tường minh.
+
+### Q040 — Resource trong private subnet ra internet bằng cách nào?
+
+> `networking` · độ khó 2/3
+
+Private subnet không có route tới internet gateway nên không ra thẳng được. Chúng tôi đặt NAT Gateway trong public subnet, và route table của private gửi 0.0.0.0/0 tới NAT Gateway đó. NAT chỉ cho chiều ra — không ai từ internet mở kết nối vào được. Đánh đổi là chi phí, vì NAT tính tiền theo giờ và theo mỗi gigabyte xử lý.
+
+### Q041 — VPC endpoint là gì và khi nào bạn dùng nó?
+
+> `networking` · độ khó 3/3
+
+Nó cho phép resource trong private subnet tới các dịch vụ AWS mà không phải đi qua internet. Có hai loại. Gateway endpoint dùng cho S3 và DynamoDB, miễn phí, hoạt động qua route table. Interface endpoint dùng cho hầu hết dịch vụ khác, dùng IP nội bộ qua ENI, tính tiền theo giờ. Lợi ích chính là tránh phí dữ liệu qua NAT và giữ traffic trong mạng AWS.
+
+### Q042 — Bạn quyết định kích thước CIDR khi thiết kế VPC thế nào?
+
+> `networking` · độ khó 2/3
+
+Nguyên tắc chính là dự trù lớn hơn nhu cầu, vì sau này khó thu nhỏ. Thứ hai, tránh CIDR chồng lấn với on-premises hay VPC khác, nếu không peering sẽ không chạy. Sau đó tôi chia theo availability zone, mỗi zone có subnet public và private. Hai chi tiết hay bị quên: AWS giữ lại năm địa chỉ IP trong mỗi subnet, và mỗi Fargate task chiếm một IP.
+
+### Q043 — Tại sao cần subnet ở ít nhất hai availability zone?
+
+> `networking` · độ khó 2/3
+
+Một availability zone là điểm lỗi đơn — nếu trung tâm dữ liệu đó gặp sự cố thì cả hệ thống chết. AWS cũng bắt buộc về mặt cấu trúc: load balancer và RDS multi-AZ đều cần subnet ở ít nhất hai zone, vì failover phải có nơi để chuyển sang. Điều cần nhớ là truyền dữ liệu giữa các AZ bị tính phí.
+
+### Q044 — EC2 trong private subnet không kết nối được RDS. Bạn troubleshoot thế nào?
+
+> `networking` · độ khó 3/3
+
+Tôi đi từng tầng một. Đầu tiên là route table — có route giữa hai subnet không. Thứ hai là security group của database: nó có cho phép chiều vào ở cổng database từ security group của EC2 không, chứ không phải từ một IP. Thứ ba là NACL, ở cả hai chiều, vì nó stateless. Thứ tư, endpoint có phân giải đúng không. Xong hết mới xét tới thông tin đăng nhập.
+
+### Q045 — Khác biệt giữa public subnet và private subnet là gì?
+
+> `networking` · độ khó 2/3
+
+Khác biệt không nằm ở một ô tích trên subnet mà ở route table. Public subnet có route 0.0.0.0/0 trỏ tới internet gateway. Private subnet thì không; hoặc không có route ra internet, hoặc trỏ tới NAT Gateway. Ngoài ra, resource trong public subnet vẫn cần IP public mới truy cập được từ ngoài. Và private không tự nhiên có nghĩa là an toàn.
+
+### Q046 — Tại sao team bạn chạy GitHub Actions trên self-hosted runner thay vì runner của GitHub?
+
+> `cicd` · độ khó 2/3
+
+Job migration phải kết nối tới Aurora trong private subnet. Runner của GitHub nằm ngoài mạng nội bộ nên không tới được. Phương án thay thế là mở database ra public, điều chúng tôi không làm. Nên chúng tôi chạy runner trên EC2 bên trong VPC. Nó cũng dùng được instance role thay vì access key dài hạn. Đánh đổi là chúng tôi phải tự vá lỗi và nó không tự scale.
+
+### Q047 — Self-hosted runner có rủi ro bảo mật gì?
+
+> `cicd` · độ khó 3/3
+
+Runner nằm trong mạng nội bộ và có quyền thật. Nếu ai đó mở pull request chứa code độc, code đó chạy trên máy chúng tôi. Nên chúng tôi không bao giờ bật nó cho repository public hay pull request từ fork. Rủi ro khác là workspace không được dọn giữa các job, nên file hay credentials có thể rò từ job này sang job khác. Chúng tôi giảm rủi ro bằng runner dùng một lần và IAM role tối thiểu.
+
+### Q048 — Bạn giảm kích thước Docker image bằng cách nào?
+
+> `docker` · độ khó 2/3
+
+Cải thiện lớn nhất là multi-stage build — biên dịch ở stage đầu, rồi chỉ copy artifact sang image cuối sạch sẽ, nên công cụ build không đi kèm. Thứ hai, dùng base image nhỏ hơn, ví dụ JRE slim thay vì JDK đầy đủ. Thứ ba, gộp các lệnh RUN vì mỗi lệnh tạo một layer. Và dùng .dockerignore. Image nhỏ thì pull nhanh hơn, quan trọng với thời gian khởi động Fargate.
+
+### Q049 — Tại sao dùng tag 'latest' là thói quen xấu?
+
+> `docker` · độ khó 2/3
+
+latest là tag có thể thay đổi — theo thời gian nó trỏ tới nội dung khác nhau. Nên bạn không biết production đang chạy phiên bản nào, và rollback thành bất khả thi vì bản latest trước đó đã mất. Hai môi trường cũng có thể chạy code khác nhau với cùng một tag. Tôi thích tag bất biến, ví dụ commit SHA, để một tag luôn ứng với đúng một bản build.
+
+### Q050 — Server hết dung lượng ổ đĩa. Bạn tìm thứ đang chiếm chỗ thế nào?
+
+> `linux` · độ khó 2/3
+
+Tôi bắt đầu bằng df -h để xem filesystem nào đầy — thường không phải cái mọi người tưởng. Rồi du -sh /* và đào dần vào thư mục lớn nhất. Thường là /var/log hoặc các layer của Docker. Một trường hợp hay gây bối rối: file đã bị xóa nhưng một tiến trình vẫn giữ nó mở nên dung lượng chưa được trả lại. Lệnh lsof cho thấy điều đó. Sau đó tôi xử lý gốc bằng log rotation.
+
+### Q051 — Trên Linux bạn kiểm tra cái gì đang lắng nghe trên một cổng và service có khỏe không?
+
+> `linux` · độ khó 2/3
+
+Tôi dùng ss -tulpn để liệt kê các cổng đang lắng nghe kèm tên tiến trình. Rồi systemctl status để xem trạng thái service và journalctl -u để xem log. Tôi cũng curl localhost để thử ngay trên chính máy đó. Bước cuối rất quan trọng: nếu chạy được cục bộ mà từ ngoài không được, thì ứng dụng ổn và vấn đề nằm ở tầng mạng — security group, NACL, hoặc route.
+
+### Q052 — Quyền file Linux như 644 và 600 nghĩa là gì, và tại sao SSH quan tâm?
+
+> `linux` · độ khó 2/3
+
+Ba chữ số ứng với chủ sở hữu, nhóm, và những người khác. Bốn là đọc, hai là ghi, một là thực thi. Nên 644 là chủ đọc ghi, người khác chỉ đọc. 600 là chỉ chủ sở hữu. SSH quan tâm vì private key không được để người khác đọc — nếu để, SSH từ chối dùng và kết nối thất bại. Vì thế file key cần quyền 600.
+
+### Q053 — Bạn xử lý secret trong CI/CD pipeline thế nào?
+
+> `cicd` · độ khó 2/3
+
+Không bao giờ hardcode và không bao giờ commit. Tôi lưu chúng trong secret store của CI, hoặc tốt hơn là lấy lúc runtime từ SSM hay Secrets Manager. Với quyền AWS, tôi thích OIDC hơn để pipeline nhận role tạm thời thay vì key tĩnh. Hệ thống CI có che secret trong log, nhưng chỉ khớp chính xác mới che được, nên giá trị mã hóa base64 vẫn có thể lộ. Và phải xoay vòng định kỳ.
+
+---
+
+## Hành vi & Kỹ năng mềm
+
+### Q054 — Kể về lần hai team có yêu cầu mâu thuẫn nhau. Bạn xử lý thế nào?
+
+> `conflict` · độ khó 2/3
+
+Bên bảo mật muốn bật AWS Managed Rules, nhưng nhiều API của chúng tôi gửi request body lớn và bị rule kích thước bắt. Thay vì chọn phe, tôi đề nghị đo trước. Chúng tôi chạy count mode và tôi phân tích log trên Athena, nhờ vậy có dữ liệu thay vì ý kiến. Sau đó tôi đề xuất chỉ override những sub-rule đó và chặn theo label kèm whitelist. Cả hai bên đều đạt được điều họ cần.
+
+### Q055 — Kể về lần có sự cố trên production và bạn phải sửa dưới áp lực.
+
+> `pressure` · độ khó 2/3
+
+Query Athena đột nhiên trả 0 rows nên chúng tôi mất khả năng quan sát log WAF và CloudFront. Đầu tiên tôi xác nhận dữ liệu vẫn về S3, điều đó cho thấy vấn đề ở parsing chứ không phải ingestion. Sau đó tôi so file log cũ với file mới và thấy AWS đã thêm field mới. Tôi sửa regex bằng nhóm catch-all để vẫn tương thích ngược. Bài học chính là nó lỗi trong im lặng.
+
+### Q056 — Kể về lần bạn phải giải thích điều kỹ thuật cho người không rành kỹ thuật.
+
+> `communication` · độ khó 2/3
+
+Khi thay FTP server bằng AWS Transfer Family, khách hàng phải chuyển từ mật khẩu sang SSH key pair. Họ là người dùng nghiệp vụ. Nên tôi tránh hẳn thuật ngữ và dùng ẩn dụ: public key là ổ khóa bạn đưa để tôi lắp, private key là chìa bạn giữ. Rồi một quy tắc duy nhất cần nhớ — đừng gửi private key cho tôi. Tôi cũng viết hướng dẫn từng bước kèm ảnh chụp màn hình.
+
+### Q057 — Kể về một sai lầm bạn từng mắc và bạn học được gì.
+
+> `mistake` · độ khó 2/3
+
+Thời gian đầu tôi sửa trực tiếp trên console khi có việc gấp, thay vì đi qua Terraform. Lúc đó chạy được, nhưng sau đó pipeline hoàn nguyên thay đổi của tôi vì code không biết gì về nó. Đó là configuration drift. Không ai bị ảnh hưởng, nhưng tôi học được là phải đưa thay đổi vào code trước, kể cả khi chậm hơn. Giờ nguyên tắc của tôi là: không có trong code thì coi như không tồn tại.
+
+### Q058 — Bạn học công nghệ mới thế nào?
+
+> `learning` · độ khó 2/3
+
+Tôi bắt đầu từ tài liệu chính thức, vì bài blog thường lỗi thời. Sau đó tôi làm một thứ nhỏ nhưng thật, vì tôi chỉ nhớ những gì đã thực sự dùng. Tôi cũng cố tình làm hỏng nó, vì hiểu các kiểu lỗi dạy được nhiều hơn đường đi suôn sẻ. Hiện tại tôi đang học Linux, Docker và networking. Tôi muốn hiểu cái nằm dưới AWS console chứ không chỉ biết bấm nút nào.
+
+### Q059 — Tại sao bạn muốn chuyển từ Cloud Engineer sang DevOps?
+
+> `career` · độ khó 2/3
+
+Tôi đã làm một phần rồi — Terraform, GitHub Actions, deploy container. Và 5 năm Java giúp tôi hiểu lập trình viên cần gì chứ không chỉ hạ tầng cho phép gì. Tôi muốn làm chủ toàn bộ con đường đưa sản phẩm ra, từ commit tới production, thay vì chỉ phần hạ tầng. Vì thế tôi đang xây nền tảng: Linux, Docker và networking. Về lâu dài tôi quan tâm tự động hóa và độ tin cậy.
+
+### Q060 — Kể về lần bạn không đồng ý với quyết định thiết kế của người cấp cao hơn.
+
+> `disagreement` · độ khó 2/3
+
+Bước đầu của tôi là đặt câu hỏi, vì thường có ràng buộc mà tôi chưa biết. Nếu vẫn không đồng ý, tôi đưa ra một lo ngại cụ thể kèm bằng chứng chứ không phải sở thích cá nhân — ví dụ chỉ ra điều gì xảy ra khi rollback. Trong thiết kế backup, tôi đã nêu lo ngại về việc thực sự khôi phục được tới đâu. Nếu quyết định vẫn theo hướng khác, tôi chấp nhận và thực hiện, nhưng ghi lại rủi ro.
+
+### Q061 — Kể về lần bạn cải thiện thứ gì đó mà không ai yêu cầu.
+
+> `ownership` · độ khó 2/3
+
+Sau sự cố Athena, không ai yêu cầu tôi làm gì thêm ngoài việc sửa lỗi. Nhưng vấn đề thật là nó lỗi trong im lặng một thời gian trước khi ai đó phát hiện. Nên tôi đề xuất thêm cảnh báo trên số dòng mỗi ngày, để việc tụt về 0 được phát hiện nhanh. Đó là thay đổi nhỏ, nhưng biến lỗi im lặng thành lỗi nhìn thấy được. Tôi cố tìm những chỗ như vậy — sửa thì rẻ mà chi phí lặp lại thì cao.
+
+### Q062 — Bạn làm việc với người khác múi giờ hoặc khác ngôn ngữ thế nào?
+
+> `teamwork` · độ khó 2/3
+
+Tôi dựa vào giao tiếp bằng văn bản, vì cuộc họp chỉ giúp những người tham dự. Tôi viết tóm tắt ngắn gồm quyết định và lý do, để ai cũng theo kịp một cách bất đồng bộ. Khi ngôn ngữ là rào cản, tôi xác nhận lại cách hiểu chứ không đoán — tôi nhắc lại điều tôi nghĩ đã thống nhất. Tôi cũng dùng sơ đồ, vì hình vẽ loại bỏ nhiều mơ hồ mà chữ nghĩa gây ra.
+
+### Q063 — Bạn ưu tiên thế nào khi có nhiều việc gấp cùng lúc?
+
+> `priority` · độ khó 2/3
+
+Đầu tiên tôi hỏi có gì đang ảnh hưởng production hay khách hàng không, vì cái đó luôn đứng đầu. Tiếp theo, việc nào đang chặn người khác — nếu việc của tôi chặn hai người thì đáng giá hơn việc chỉ chặn mình tôi. Sau đó tôi cân giữa hạn chót và công sức. Phần quan trọng nhất là báo sớm nếu có gì sẽ trễ. Trễ hạn trong im lặng tệ hơn nhiều so với nói trước.
+
+### Q064 — Bạn có câu hỏi nào cho chúng tôi không?
+
+> `questions` · độ khó 2/3
+
+Vâng, tôi có vài câu. Thứ nhất, team hiện xử lý on-call và sự cố thế nào? Thứ hai, deployment pipeline hiện tại ra sao, và điều anh chị muốn cải thiện nhất ở nó là gì? Thứ ba, thành công của vị trí này trong sáu tháng đầu trông như thế nào? Tôi hỏi câu cuối vì tôi muốn biết vấn đề thực sự mà công ty đang tuyển người để giải quyết.
+
+### Q065 — Điểm yếu lớn nhất của bạn là gì?
+
+> `strength-weakness` · độ khó 2/3
+
+Nói tiếng Anh. Đọc và viết thì ổn vì tôi làm việc với tài liệu hằng ngày, nhưng nói thì chậm hơn, nhất là với từ vựng chuyên ngành. Tôi đang chủ động cải thiện — tôi luyện mỗi ngày và tập trung vào những thuật ngữ thực sự dùng trong công việc. Tôi đã trao đổi kỹ thuật được rồi; cái tôi đang cải thiện là nói trôi chảy mà không phải dừng lại dịch trong đầu.
+
+---
+
+## Thiết kế hệ thống
+
+### Q066 — Batch chạy một lần mỗi ngày. Nếu nghiệp vụ yêu cầu mỗi 5 phút, bạn đổi gì?
+
+> `batch` · độ khó 3/3
+
+Câu query đổi trước tiên. Hiện nó lấy cả ngày; ở mức 5 phút tôi cần đọc tăng dần dùng watermark, ví dụ timestamp xử lý gần nhất. Thứ hai, cold start bắt đầu quan trọng, nên nếu mỗi lần chạy dưới 15 phút tôi sẽ cân nhắc Lambda. Thứ ba, các lần chạy có thể chồng nhau nên tôi giới hạn concurrency. Cuối cùng file output sẽ tự ghi đè, nên tôi thêm timestamp và làm job idempotent.
+
+### Q067 — Thiết kế cách đơn giản đảm bảo file hằng đêm được gửi tới đối tác, kể cả khi có lỗi.
+
+> `reliability` · độ khó 3/3
+
+Job tạo file, upload, rồi ghi nhận thành công vào đâu đó — một dòng DynamoDB hoặc một object đánh dấu. Lỗi tạm thời thì retry kèm backoff. Nếu retry hết mà vẫn lỗi thì báo động thay vì im lặng thất bại. Phần bổ sung quan trọng là một kiểm tra riêng vào giờ hạn: nếu tới lúc đó chưa có bản ghi thành công thì cảnh báo. Cái đó bắt được trường hợp job không chạy lần nào, thứ mà alarm lỗi không phát hiện được.
+
+### Q068 — Một team mới cần quyền đọc một prefix S3 từ account AWS khác. Bạn thiết lập thế nào?
+
+> `security` · độ khó 3/3
+
+Tôi sẽ tạo một role trong account của chúng tôi để account của họ assume — không chia sẻ access key. Trust policy ghi account của họ làm principal. Permission policy cấp s3:GetObject chỉ trên prefix đó, cộng ListBucket kèm điều kiện prefix, nếu không họ liệt kê được cả bucket. Nếu object được mã hóa thì họ cũng cần kms:Decrypt trên key. Sau đó tôi rà soát quyền định kỳ.
+
+### Q069 — Hóa đơn AWS tháng này tăng 30%. Bạn điều tra thế nào?
+
+> `cost` · độ khó 2/3
+
+Tôi bắt đầu ở Cost Explorer, nhóm theo dịch vụ và so sánh tháng này với tháng trước. Điểm mấu chốt là tìm phần chênh lệch chứ không phải khoản lớn nhất — dịch vụ tốn nhiều nhất có thể vẫn bình thường. Rồi tôi nhóm theo usage type để xem cụ thể cái gì tăng. Nguyên nhân phổ biến là phí dữ liệu qua NAT, lượng log đổ vào CloudWatch, và tài nguyên bị bỏ quên. Sau đó tôi đặt budget alert.
+
+### Q070 — Nếu làm lại migration MySQL sang PostgreSQL với gần như không downtime, bạn đổi gì?
+
+> `migration` · độ khó 2/3
+
+Thiết kế của chúng tôi là cutover có kế hoạch — restore snapshot, transform, load. Cách đó cần một khoảng đóng băng. Để gần như không downtime, tôi sẽ dùng DMS với change data capture: load toàn bộ trước, rồi để CDC giữ đích đồng bộ trong khi nguồn vẫn đang chạy. Lúc cutover ta dừng ghi một chút, chờ độ trễ về 0, rồi trỏ ứng dụng sang PostgreSQL. Đánh đổi là phức tạp hơn và kế hoạch rollback khó hơn.
+
+---
