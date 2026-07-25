@@ -11,7 +11,7 @@ Tổng cộng **70 câu hỏi** + **5 mẫu giới thiệu bản thân**.
 - [Kỹ thuật](#kỹ-thuật) — 35 câu
 - [Hành vi & Kỹ năng mềm](#hành-vi-kỹ-năng-mềm) — 12 câu
 - [Thiết kế hệ thống](#thiết-kế-hệ-thống) — 5 câu
-- [Networking — Luồng đi & Concept](#Networking—Luồng-đi-&-Concept) — 18 câu
+- [Networking — Luồng đi & Concept](#Networking-Luồng-đi-&-Concept) — 18 câu
 
 ---
 
@@ -475,7 +475,7 @@ Thiết kế của chúng tôi là cutover có kế hoạch — restore snapshot
 
 ---
 
-## Networking — Luồng đi & Concept
+## Networking Luồng đi & Concept
 
 ### Q071 — Giải thích luồng đi của một request từ khi user gõ domain đến khi chạm EC2.
 > `networking` · độ khó 2/3
