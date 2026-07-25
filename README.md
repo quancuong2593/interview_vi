@@ -48,11 +48,21 @@ Tôi là Cloud Engineer tại FPT Software, khoảng 2.5 năm AWS sau 5 năm bac
 
 Chúng tôi dùng AWS Managed Rules nhưng không biết API nào sẽ bị match. Một số endpoint gửi request body trên 8KB nên bị SizeRestrictions_BODY bắt. Bật block mode ngay sẽ gây false positive trên production. Vì vậy chúng tôi dùng count mode trước. Rule vẫn gắn label nhưng không chặn. Sau đó tôi kiểm tra WAF logs trên Athena để xem URI nào match.
 
-### Q002 — Giải thích cơ chế label hoạt động thế nào trong setup WAF của bạn?
-
+### Q002 — Giải thích cơ chế label trong WAF. Vì sao override sub-rule sang count mà vẫn chặn được?
 > `waf` · độ khó 3/3
+Label là một cái nhãn WAF dán lên request khi một rule match, nhưng không chặn — chỉ đánh dấu. Rule phía sau đọc nhãn đó để quyết định số phận request. Cơ chế đầy đủ: managed rule của AWS là hộp đen, không sửa được logic bên trong để thêm ngoại lệ. Nên mình dùng rule_action_override chuyển riêng sub-rule cần thiết (ví dụ SizeRestrictions_BODY) sang count. Count nghĩa là bỏ chặn hoàn toàn, chỉ còn dán nhãn rồi cho request đi tiếp — rule vẫn phát hiện nhưng mất quyền chặn. Sau đó mình tạo một custom rule phía sau, đọc nhãn: path trong whitelist thì cho qua, path ngoài whitelist thì chặn. Bản chất là mình mượn khả năng phát hiện của AWS (nó dán nhãn giỏi), nhưng tự viết lại phần quyết định chặn để nhét được whitelist. Thứ tự bắt buộc: managed rule đứng trước để dán nhãn, custom rule đứng sau để đọc nhãn. Đảo ngược thì custom rule chạy trước, lúc đó chưa có nhãn nào, cơ chế hỏng. Câu chốt: count = bỏ chặn + dán nhãn.
 
-Đầu tiên tôi dùng rule_action_override để đổi một sub-rule sang count. Rule vẫn chạy và vẫn gắn label, chỉ là không chặn. Label đó theo request. Sau đó tôi thêm custom rule phía sau. Rule này match theo label nhưng loại trừ các URI được whitelist. Nên mọi thứ có label sẽ bị chặn, trừ API của chúng tôi. Thứ tự rule rất quan trọng.
+---
+
+### Q002B — Nếu KHÔNG override sub-rule (để nó block mặc định) rồi vẫn thêm custom rule whitelist phía sau, API hợp lệ body lớn có được cứu không?
+> `waf` · độ khó 3/3
+Không được cứu. Vì nếu không override, sub-rule vẫn block theo mặc định. Khi API body lớn match sub-rule đó, request bị chặn ngay tại managed rule và WAF dừng luôn — các rule phía sau không chạy nữa. Nên custom rule whitelist đặt phía sau không bao giờ có cơ hội chạy. Đây chính là lý do bắt buộc phải override sub-rule sang count trước: count không dừng request mà cho nó chảy tiếp mang theo nhãn, nhờ đó custom rule phía sau mới có cơ hội đọc nhãn và áp whitelist. Bài học: trong WAF, một quyết định block là terminating — match và block là dừng, rule sau không chạy. Count không phải terminating nên request chảy tiếp được.
+
+---
+
+### Q002C — Nếu chỉ chuyển sub-rule sang count mà KHÔNG thêm custom rule thì sao? Count cho qua rồi cần gì custom rule nữa?
+> `waf` · độ khó 2/3
+Count cho qua tất cả — và đó chính là vấn đề. Count không phân biệt ai với ai: nó cho qua cả API hợp lệ của mình lẫn tấn công thật. Nếu dừng ở count, mình vô hiệu hóa hoàn toàn khả năng bảo vệ của sub-rule đó — kẻ tấn công gửi body khổng lồ cũng lọt. Mình không muốn cho qua tất, mình muốn cho qua API của mình còn chặn mọi thứ khác. Count một mình không làm được điều đó vì nó chỉ có một chế độ là cho qua hết. Custom rule sinh ra để đóng cửa lại có chọn lọc: sau khi count mở cửa cho tất cả và dán nhãn, custom rule chặn lại những path ngoài whitelist, chỉ chừa khe cho API của mình. Tóm lại: count mở toang cửa, custom rule đóng lại chỉ trừ whitelist. Không có custom rule thì cửa mở toang mãi, mất bảo vệ.
 
 ### Q003 — Query Athena đột nhiên trả về 0 rows. Kể tôi nghe bạn tìm ra nguyên nhân gốc thế nào?
 
