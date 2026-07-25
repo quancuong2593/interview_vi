@@ -68,13 +68,13 @@ Count cho qua tất cả — và đó chính là vấn đề. Count không phân
 
 > `athena` · độ khó 3/3
 
-Query trả 0 rows nhưng file log vẫn đổ về S3. Nghĩa là ingestion ổn, vấn đề ở parsing. Tôi tải một file cũ và một file mới rồi so sánh. AWS đã thêm field mới vào cuối mỗi dòng. Bảng của chúng tôi dùng RegexSerDe vốn cần số cột cố định. Khi dòng không match, Athena âm thầm bỏ record. Tôi thêm nhóm catch-all vào cuối regex.
+Query trả 0 rows nhưng file log vẫn đổ về S3. Nghĩa là ingestion ổn, vấn đề ở parsing. Tôi tải một file cũ và một file mới rồi so sánh. AWS đã thêm field mới vào cuối mỗi dòng. Bảng của chúng tôi dùng RegexSerDe vốn cần số cột cố định. Khi dòng không match, Athena âm thầm bỏ record. Tôi thêm nhóm catch-all (.*) vào cuối regex.
 
 ### Q004 — Bạn sẽ phòng ngừa vấn đề log format đó tái diễn thế nào?
 
 > `athena` · độ khó 2/3
 
-Ba điều. Thứ nhất, viết regex theo hướng khoan dung, có catch-all ở cuối. Thứ hai, thêm CloudWatch alarm khi số dòng mỗi ngày về 0, để phát hiện trong vài giờ chứ không phải vài tuần. Thứ ba, nếu format log cho phép thì chuyển sang SerDe hiểu schema như JSON thay vì regex, vì nó không phụ thuộc thứ tự cột.
+Ba điều. Thứ nhất, viết regex theo hướng khoan dung, có catch-all (.*) ở cuối. Thứ hai, thêm CloudWatch alarm khi số dòng mỗi ngày về 0, để phát hiện trong vài giờ chứ không phải vài tuần. Thứ ba, nếu format log cho phép thì chuyển sang SerDe hiểu schema như JSON thay vì regex, vì nó không phụ thuộc thứ tự cột.
 
 ### Q005 — Tại sao bạn export dữ liệu ra S3 dạng CSV thay vì nối trực tiếp MySQL với PostgreSQL?
 
