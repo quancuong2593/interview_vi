@@ -11,6 +11,7 @@ Tổng cộng **70 câu hỏi** + **5 mẫu giới thiệu bản thân**.
 - [Kỹ thuật](#kỹ-thuật) — 35 câu
 - [Hành vi & Kỹ năng mềm](#hành-vi-kỹ-năng-mềm) — 12 câu
 - [Thiết kế hệ thống](#thiết-kế-hệ-thống) — 5 câu
+- [Networking — Luồng đi & Concept](#Networking-—-Luồng-đi-&-Concept) — 18 câu
 
 ---
 
