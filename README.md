@@ -530,7 +530,7 @@ Diễn biến chi tiết:
 2. Chiều vào NACL: NACL chỉ nhìn DESTINATION port của gói, là 443. Khớp rule inbound allow 443 → cho qua. NACL không quan tâm source port 54321.
 3. Chiều vào SG: allow 443 → qua. SG ghi nhớ kết nối này (connection tracking).
 4. EC2 xử lý xong, tạo gói phản hồi. Hệ điều hành EC2 tự đảo nhãn: Source = EC2:443, Destination = Client:54321. Lúc này destination port KHÔNG còn là 443 nữa mà là 54321.
-5. Chiều ra SG: vì stateful, SG nhớ kết nối ở bước 3 nên tự cho ra, bất kể có rule outbound nào không.
+5. Chiều ra SG: vì stateful, SG nhớ kết nối ở bước 3 nên tự cho ra, bất kể có rule outbound 54321 hay không.
 6. Chiều ra NACL: vì stateless, NACL không nhớ gì, xét gói này độc lập. Nó nhìn destination port 54321. Rule outbound chỉ allow 443 → 54321 không khớp → CHẶN.
 
 Kết quả: TCP handshake xong, request vào được, nhưng response không ra được → treo, cuối cùng client timeout.
@@ -543,7 +543,7 @@ Cách sửa: thêm outbound rule allow TCP 1024-65535 (dải ephemeral port). AW
 > `networking` · độ khó 3/3
 Stateful nghĩa là nhớ được kết nối đã cho phép; stateless nghĩa là xét từng gói độc lập, không nhớ gì.
 
-Security Group là stateful. Khi một kết nối được cho vào ở chiều inbound, SG ghi lại vào bảng connection tracking, gồm bộ 4 thông số (4-tuple): source IP, source port, destination IP, destination port. Ví dụ: Client:54321 → EC2:443. Khi gói phản hồi đi ra, SG thấy các thông số đảo ngược khớp đúng với kết nối đã cho vào, nên tự động cho ra — bất kể phần outbound có rule nào hay không. Kể cả nếu xóa sạch mọi outbound rule của SG, response của một kết nối hợp lệ vẫn ra được. Đây là lý do trong thực tế ta hầu như không phải động tới outbound của SG.
+Security Group là stateful. Khi một kết nối được cho vào ở chiều inbound, SG ghi lại vào bảng connection tracking, gồm bộ 4 thông số (4-tuple): source IP, source port, destination IP, destination port. Ví dụ: Client:54321 → EC2:443. Khi gói phản hồi đi ra, SG thấy các thông số đảo ngược khớp đúng với kết nối đã cho vào, nên tự động cho ra — bất kể phần outbound có rule này hay không. Kể cả nếu xóa sạch mọi outbound rule của SG, response của một kết nối hợp lệ vẫn ra được. Đây là lý do trong thực tế ta hầu như không phải động tới outbound của SG.
 
 Network ACL là stateless. Nó không có bảng connection tracking. Mỗi gói tin, dù đi vào hay đi ra, đều bị xét lại từ đầu theo rule. Nên chiều vào phải có rule cho port đích của gói vào (443), chiều ra phải có rule riêng cho port đích của gói ra (ephemeral port 54321). Không có chuyện NACL tự suy ra "đây là phản hồi của kết nối trước". Vì vậy với NACL, luôn phải cấu hình cả hai chiều một cách tường minh.
 
