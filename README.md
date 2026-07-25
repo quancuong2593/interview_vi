@@ -473,3 +473,114 @@ Tôi bắt đầu ở Cost Explorer, nhóm theo dịch vụ và so sánh tháng 
 Thiết kế của chúng tôi là cutover có kế hoạch — restore snapshot, transform, load. Cách đó cần một khoảng đóng băng. Để gần như không downtime, tôi sẽ dùng DMS với change data capture: load toàn bộ trước, rồi để CDC giữ đích đồng bộ trong khi nguồn vẫn đang chạy. Lúc cutover ta dừng ghi một chút, chờ độ trễ về 0, rồi trỏ ứng dụng sang PostgreSQL. Đánh đổi là phức tạp hơn và kế hoạch rollback khó hơn.
 
 ---
+
+## Networking — Luồng đi & Concept
+
+### Q071 — Giải thích luồng đi của một request từ khi user gõ domain đến khi chạm EC2.
+> `networking` · độ khó 2/3
+User gõ domain, trình duyệt hỏi DNS. Route 53 phân giải domain thành IP public và trả về cho client. Client gửi HTTP request tới IP đó, request đi qua internet và chạm Internet Gateway của VPC. Tại IGW, AWS làm 1:1 NAT dịch IP public thành IP private của EC2. Hạ tầng ngầm của AWS (VPC mapping service) nhìn IP private, biết nó thuộc subnet nào và đẩy gói tin vào subnet đó. Gói tin đi qua NACL ở tầng subnet, rồi qua Security Group ở tầng ENI của EC2, cuối cùng chạm hệ điều hành. Điểm quan trọng: chiều vào KHÔNG dùng route table của subnet — route table chỉ dùng cho chiều đi ra.
+
+---
+
+### Q072 — Route table có inbound và outbound không?
+> `networking` · độ khó 1/3
+Không. Route table không chia inbound/outbound như firewall. Nó chỉ có destination và target, và chỉ định tuyến cho chiều đi ra khỏi subnet. Route table trả lời câu hỏi "gói tin này đi đường nào", không phải "gói tin này được vào hay không". Việc lọc inbound/outbound là nhiệm vụ của NACL (tầng subnet) và Security Group (tầng instance). Chiều về của gói tin không cần cấu hình route table vì hạ tầng AWS tự biết IP đích thuộc subnet nào nhờ local route.
+
+---
+
+### Q073 — Phân biệt Destination và Target trong route table.
+> `networking` · độ khó 1/3
+Destination là dải IP đích mà gói tin muốn tới. Target là "cổng thoát" xử lý và vận chuyển gói tin đó. Ví dụ: destination 0.0.0.0/0 với target là Internet Gateway nghĩa là mọi IP ngoài VPC sẽ đi ra qua IGW. Destination 10.0.0.0/16 với target local nghĩa là traffic nội bộ VPC đi thẳng trong mạng. AWS dùng nguyên tắc longest prefix match: nếu một IP khớp nhiều dòng, dòng nào có CIDR chi tiết hơn sẽ thắng.
+
+---
+
+### Q074 — Trong cùng một VPC, có cần route table để hai subnet nói chuyện với nhau không?
+> `networking` · độ khó 2/3
+Có, vẫn cần. Nhưng AWS tự tạo sẵn dòng local route mặc định (VD 10.0.0.0/16 → local) trong mọi route table, nên ta không phải cấu hình tay. Nếu không có dòng local này, các subnet trong VPC sẽ không tìm thấy nhau. Nhiều người tưởng không cần route table vì AWS làm sẵn. Security Group không thay thế được route table: route table lo tìm đường đi, Security Group lo kiểm tra quyền ra vào. Hai việc hoàn toàn khác nhau.
+
+---
+
+### Q075 — Khi request từ internet đi qua IGW vào VPC, IGW dựa vào đâu để biết đưa gói tin tới subnet nào?
+> `networking` · độ khó 3/3
+IGW không dùng route table của subnet cho chiều vào. Nó dựa vào VPC mapping service — bản đồ ánh xạ IP toàn VPC. IP public mà Route 53 trả về không nằm trực tiếp trên EC2; EC2 chỉ có IP private. AWS dùng 1:1 NAT để liên kết public IP với private IP, và bản đồ này lưu ở quy mô toàn VPC. Khi gói tin chạm IGW, IGW dịch public IP thành private IP, rồi hạ tầng AWS đối chiếu private IP với dải các subnet để biết đẩy vào đâu. Route table của subnet hoàn toàn không tham gia chiều vào.
+
+---
+
+### Q076 — Vậy route table trỏ 0.0.0.0/0 → IGW dùng để làm gì, nếu chiều vào không dùng nó?
+> `networking` · độ khó 2/3
+Dòng đó chỉ dùng cho chiều đi ra. Khi EC2 trong subnet muốn phản hồi request cho user internet, hoặc chủ động gọi ra ngoài, nó ném gói tin ra IGW theo dòng 0.0.0.0/0. IGW dịch ngược private IP thành public IP để gửi trả. Route table trong AWS bản chất là công cụ định tuyến một chiều — chỉ trả lời "tôi muốn gửi tới IP X thì đi đường nào". Chiều vào là việc của VPC mapping service, NACL và Security Group.
+
+---
+
+### Q077 — Sự khác nhau giữa Security Group và NACL?
+> `networking` · độ khó 2/3
+Security Group gắn ở tầng ENI của instance, NACL gắn ở tầng subnet. Khác biệt quan trọng nhất: Security Group là stateful — nếu cho traffic vào thì chiều trả về tự động được phép ra. NACL là stateless — mỗi gói tin xét độc lập, phải viết rule cho cả hai chiều. Security Group chỉ allow được, NACL vừa allow vừa deny tường minh và xét theo số thứ tự rule, rule khớp đầu tiên thắng. Thực tế dùng Security Group cho công việc hằng ngày, NACL khi cần chặn nguyên một dải IP ở cấp subnet.
+
+---
+
+### Q078 — NACL đã allow inbound 443 và outbound 443, nhưng client gọi HTTPS vào EC2 vẫn bị treo. Vì sao?
+> `networking` · độ khó 3/3
+Vấn đề là ephemeral port. Khi client mở kết nối, nó dùng một source port ngẫu nhiên thường trên 1024, ví dụ 54321. Chiều vào port đích là 443, NACL cho qua. Nhưng khi EC2 phản hồi, gói trả về đi tới port 54321 của client chứ không phải 443. NACL outbound chỉ allow 443 nên chặn gói này lại. Kết quả là request vào được nhưng response không ra được, gây treo. Security Group không gặp lỗi này vì nó stateful. Cách sửa: thêm outbound rule allow TCP 1024-65535. AWS khuyến nghị dải này để phủ hết ephemeral port của Linux, Windows và ELB.
+
+---
+
+### Q079 — Tại sao ALB phải dùng Alias record thay vì A record hoặc CNAME?
+> `networking` · độ khó 2/3
+ALB không có IP cố định — AWS thay đổi IP liên tục để auto-scale và đảm bảo tính sẵn sàng. Nên không thể hardcode IP vào A record. CNAME thì không dùng được cho apex domain (domain gốc như example.com), chỉ dùng cho subdomain. Alias là bản ghi riêng của Route 53, trỏ trực tiếp tới AWS resource, dùng được cả cho apex domain lẫn subdomain, và không tính phí query DNS. Route 53 tự phân giải Alias thành IP hiện tại của ALB tại thời điểm truy vấn.
+
+---
+
+### Q080 — ALB có 2 IP ở 2 AZ. Bạn tắt hết EC2 ở AZ-A nhưng AZ-A vẫn hoạt động. dig domain nhận mấy IP?
+> `networking` · độ khó 3/3
+Vẫn nhận 2 IP. Đây là điểm nhiều người nhầm. Có hai tầng độc lập: tầng DNS phản ánh node ALB nào còn sống, còn tầng ALB phản ánh target nào còn khỏe. Node ALB ở AZ-A vẫn sống nên DNS vẫn trả IP của nó. Khi node đó nhận request, nó sẽ forward sang target khỏe ở AZ-B nhờ cross-zone load balancing. DNS chỉ bớt IP khi chính node ALB ở AZ-A chết, ví dụ khi cả AZ sập. Nếu tất cả target ở mọi AZ đều unhealthy, ALB chuyển sang fail-open, vẫn nhận và forward thay vì từ chối.
+
+---
+
+### Q081 — Cross-Zone Load Balancing hoạt động thế nào?
+> `networking` · độ khó 3/3
+Khi bật, một node ALB ở bất kỳ AZ nào sẽ phân phối request đều tới tất cả target khỏe mạnh ở mọi AZ, không phân biệt AZ. Nghĩa là node ALB ở AZ-A có thể gửi request tới target ở AZ-B ngay cả khi target AZ-A vẫn khỏe — đây là hành vi mặc định, không phải cơ chế cứu hộ khi quá tải. Với ALB, cross-zone luôn bật ở cấp load balancer và không tắt được, chỉ tinh chỉnh được ở cấp target group. Với NLB thì mặc định tắt. Lưu ý: traffic cross-AZ bị tính phí data transfer.
+
+---
+
+### Q082 — DNS caching ảnh hưởng thế nào đến failover?
+> `networking` · độ khó 3/3
+Client không hỏi DNS mỗi request. Kết quả DNS được cache ở nhiều tầng: trình duyệt, hệ điều hành, và resolver của ISP, theo giá trị TTL. Hệ quả là một client có thể dùng cùng một IP suốt một thời gian dài. Khi một AZ sập, client đã cache IP cũ vẫn cố kết nối vào IP chết cho tới khi TTL hết hạn. Vì vậy DNS không bao giờ là cơ chế failover tốt — nó chậm và phụ thuộc cache ngoài tầm kiểm soát. Failover thật nên dựa vào ALB, health check, hoặc CloudFront origin retry, không dựa vào việc đổi DNS record.
+
+---
+
+### Q083 — ALB forward request tới EC2. Trong Security Group của EC2, bạn allow inbound từ đâu?
+> `networking` · độ khó 2/3
+Allow inbound từ Security Group của ALB, không phải từ IP. Lý do là IP của ALB thay đổi liên tục khi auto-scale; nếu hardcode IP thì hôm nay đúng, mai ALB scale ra IP mới sẽ bị chặn. Tham chiếu bằng Security Group ID thì AWS tự resolve — bất kỳ ENI nào gắn SG đó của ALB đều được phép. Đây là best practice: dùng SG reference thay vì IP range cho traffic nội bộ giữa các tier.
+
+---
+
+### Q084 — Có CloudFront đứng trước ALB. Làm sao bắt buộc mọi traffic phải đi qua CloudFront, không cho gọi thẳng ALB?
+> `networking` · độ khó 3/3
+OAC chỉ dùng được cho S3, không dùng cho ALB. Với ALB dùng hai cách kết hợp. Thứ nhất, CloudFront thêm một custom header bí mật (ví dụ X-Origin-Verify) vào mọi request tới origin; ALB listener rule kiểm tra header đó, khớp thì forward, không khớp thì trả 403. Thứ hai, giới hạn Security Group của ALB chỉ nhận traffic từ prefix list của CloudFront (com.amazonaws.global.cloudfront.origin-facing). Prefix list một mình chưa đủ vì mọi CloudFront distribution trên thế giới đều nằm trong đó, nên custom header là phần xác thực đúng distribution của mình. Chỉ giấu DNS name của ALB không phải là bảo vệ — đó là security through obscurity.
+
+---
+
+### Q085 — EC2 ở private subnet gọi tới S3. Route table có 0.0.0.0/0 → NAT Gateway. Gói tin đi đường nào? Thêm S3 Gateway Endpoint thì đổi gì?
+> `networking` · độ khó 2/3
+M��c định gói tin đi qua NAT Gateway rồi ra internet để tới S3, tốn phí NAT data processing. Khi thêm S3 Gateway Endpoint, AWS tự thêm một route vào route table với destination là prefix list của S3 (pl-xxxx) và target là endpoint (vpce-xxxx). Vì prefix list cụ thể hơn 0.0.0.0/0, theo longest prefix match, traffic tới S3 sẽ đi qua endpoint thay vì NAT. Lợi ích: không tốn phí NAT, và traffic không rời mạng AWS nên an toàn hơn. Gateway Endpoint miễn phí và chỉ dùng cho S3 và DynamoDB.
+
+---
+
+### Q086 — Phân biệt Gateway Endpoint và Interface Endpoint.
+> `networking` · độ khó 3/3
+Gateway Endpoint chỉ dùng cho S3 và DynamoDB, miễn phí, hoạt động bằng cách thêm route vào route table trỏ tới prefix list của dịch vụ. Interface Endpoint dùng cho hầu hết các dịch vụ AWS khác, hoạt động bằng cách tạo một ENI với IP private trong subnet, và tính phí theo giờ cộng phí data. Điểm chung là cả hai cho phép resource trong private subnet truy cập dịch vụ AWS mà không cần đi qua internet, giúp tránh phí NAT và giữ traffic trong mạng AWS. Chọn Gateway khi chỉ cần S3/DynamoDB vì nó miễn phí; các dịch vụ còn lại buộc dùng Interface.
+
+---
+
+### Q087 — Không có CloudFront, Route 53 trỏ thẳng tới S3 được không?
+> `networking` · độ khó 2/3
+Được, nhưng có điều kiện. Chỉ trỏ thẳng tới S3 khi bật Static Website Hosting trên bucket, và tên bucket phải trùng khớp hoàn toàn với domain — muốn dùng example.com thì bucket phải tên chính xác là example.com. Dùng Alias A record trỏ tới S3 website endpoint. Hạn chế lớn nhất: S3 website endpoint chỉ chạy HTTP, không hỗ trợ HTTPS. Muốn có HTTPS bắt buộc phải đặt CloudFront phía trước. Vì vậy trong thực tế, hầu hết dùng Route 53 → CloudFront → S3 (qua OAC) để vừa có HTTPS vừa bảo vệ được bucket.
+
+---
+
+### Q088 — Giải thích Control Plane và Data Plane qua ví dụ ALB.
+> `networking` · độ khó 3/3
+Control plane là các hoạt động chạy nền, liên tục, không gắn với từng request: ELB service theo dõi node nào còn sống, ALB health-check các target mỗi chu kỳ, và cập nhật DNS record của ALB. Data plane là đường đi của từng request thật: client hỏi DNS nhận IP, gửi TCP tới IP đó, node ALB nhận rồi chọn target forward. Hai tầng này độc lập hoàn toàn — Route 53 không hỏi ALB gì theo từng request, ALB cũng không báo cáo cho Route 53. Hiểu tách bạch hai tầng này giúp trả lời đúng nhiều tình huống, ví dụ vì sao tắt EC2 mà DNS vẫn trả đủ IP.
+
+---
+
