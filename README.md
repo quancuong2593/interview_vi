@@ -606,3 +606,15 @@ PITR cho phép khôi phục tới bất kỳ thời điểm nào trong khoảng 
 
 ---
 
+### Q092 — Backup RDS giữ 5 năm, sao không export ra S3 Glacier cho rẻ mà lại để trong Backup Vault?
+> `backup` · độ khó 3/3
+Vì backup 5 năm là để cứu hộ và compliance, nên khi cần tới thường là lúc khẩn cấp hoặc bị audit, và lúc đó mình muốn một cú restore ra được database hoàn chỉnh chứ không phải ngồi dựng lại pipeline import từ Glacier. Snapshot trong vault giữ nguyên định dạng gốc — index, constraint, tính nhất quán — còn nếu dump ra CSV nhét vào Glacier thì khi restore phải build lại schema và index, với dữ liệu 5 năm tuổi thì rất rủi ro. Ngoài ra vault có Vault Lock để chống xóa, phục vụ compliance. Về chi phí, warm storage của AWS Backup tính theo kiểu incremental — chỉ tính phần dung lượng thay đổi giữa các bản chứ không tính trọn từng snapshot — nên không đắt như tưởng. Với dự án của mình, mình đã tính ra khoảng 13 đô một tháng và khách hàng đồng ý. Nên đây là quyết định cân nhắc trade-off giữa chi phí và khả năng khôi phục, không phải bị giới hạn ép buộc.
+
+---
+
+### Q093 — Tại sao log lại lưu trên S3 mà không lưu trong Backup Vault như database?
+> `backup` · độ khó 2/3
+Vì database và log phục vụ hai mục đích khác nhau. Database backup cần restore ra được một instance hoàn chỉnh khi có sự cố, nên để trong Backup Vault để restore trực tiếp và nhất quán. Log thì chỉ cần đọc lại để tra cứu hoặc phân tích, không cần restore ra database sống. Với nhu cầu chỉ đọc, lưu trên S3 hợp hơn nhiều: rẻ hơn, tier được qua Standard-IA và Glacier theo lifecycle, và quan trọng là query trực tiếp được bằng Athena mà không cần restore gì cả. Backup Vault không thiết kế cho việc query dữ liệu kiểu này. Nên nguyên tắc thiết kế xuyên suốt là: cần restore ra database thì dùng vault, chỉ cần đọc lại thì dùng S3.
+
+---
+
