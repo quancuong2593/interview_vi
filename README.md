@@ -520,9 +520,34 @@ Security Group gắn ở tầng ENI của instance, NACL gắn ở tầng subnet
 
 ---
 
-### Q078 — NACL đã allow inbound 443 và outbound 443, nhưng client gọi HTTPS vào EC2 vẫn bị treo. Vì sao?
+### Q078A — NACL đã allow inbound 443 và outbound 443, nhưng client gọi HTTPS vào EC2 vẫn bị treo. Vì sao?
 > `networking` · độ khó 3/3
 Vấn đề là ephemeral port. Khi client mở kết nối, nó dùng một source port ngẫu nhiên thường trên 1024, ví dụ 54321. Chiều vào port đích là 443, NACL cho qua. Nhưng khi EC2 phản hồi, gói trả về đi tới port 54321 của client chứ không phải 443. NACL outbound chỉ allow 443 nên chặn gói này lại. Kết quả là request vào được nhưng response không ra được, gây treo. Security Group không gặp lỗi này vì nó stateful. Cách sửa: thêm outbound rule allow TCP 1024-65535. AWS khuyến nghị dải này để phủ hết ephemeral port của Linux, Windows và ELB.
+> 
+Nguyên nhân là ephemeral port cộng với việc NACL stateless. Cần hiểu rằng mỗi gói tin đều có source port và destination port, và chúng ĐẢO CHIỀU khi phản hồi.  
+Diễn biến chi tiết:
+1. Client mở kết nối, tự sinh một source port ngẫu nhiên thường trên 1024, ví dụ 54321. Gói đi có nhãn: Source = Client:54321, Destination = EC2:443.
+2. Chiều vào NACL: NACL chỉ nhìn DESTINATION port của gói, là 443. Khớp rule inbound allow 443 → cho qua. NACL không quan tâm source port 54321.
+3. Chiều vào SG: allow 443 → qua. SG ghi nhớ kết nối này (connection tracking).
+4. EC2 xử lý xong, tạo gói phản hồi. Hệ điều hành EC2 tự đảo nhãn: Source = EC2:443, Destination = Client:54321. Lúc này destination port KHÔNG còn là 443 nữa mà là 54321.
+5. Chiều ra SG: vì stateful, SG nhớ kết nối ở bước 3 nên tự cho ra, bất kể có rule outbound nào không.
+6. Chiều ra NACL: vì stateless, NACL không nhớ gì, xét gói này độc lập. Nó nhìn destination port 54321. Rule outbound chỉ allow 443 → 54321 không khớp → CHẶN.
+
+Kết quả: TCP handshake xong, request vào được, nhưng response không ra được → treo, cuối cùng client timeout.
+
+Cách sửa: thêm outbound rule allow TCP 1024-65535 (dải ephemeral port). AWS khuyến nghị dải 1024-65535 để phủ hết mọi hệ điều hành client (Linux thường 32768-60999, Windows 49152-65535). Điểm mấu chốt để nhớ: NACL kiểm tra theo destination port của từng gói, mà chiều về destination port là ephemeral port của client chứ không phải 443.
+
+---
+
+### Q078B — Stateful và Stateless khác nhau chính xác thế nào? Vì sao SG cho response ra dù không có rule outbound tương ứng?
+> `networking` · độ khó 3/3
+Stateful nghĩa là nhớ được kết nối đã cho phép; stateless nghĩa là xét từng gói độc lập, không nhớ gì.
+
+Security Group là stateful. Khi một kết nối được cho vào ở chiều inbound, SG ghi lại vào bảng connection tracking, gồm bộ 4 thông số (4-tuple): source IP, source port, destination IP, destination port. Ví dụ: Client:54321 → EC2:443. Khi gói phản hồi đi ra, SG thấy các thông số đảo ngược khớp đúng với kết nối đã cho vào, nên tự động cho ra — bất kể phần outbound có rule nào hay không. Kể cả nếu xóa sạch mọi outbound rule của SG, response của một kết nối hợp lệ vẫn ra được. Đây là lý do trong thực tế ta hầu như không phải động tới outbound của SG.
+
+Network ACL là stateless. Nó không có bảng connection tracking. Mỗi gói tin, dù đi vào hay đi ra, đều bị xét lại từ đầu theo rule. Nên chiều vào phải có rule cho port đích của gói vào (443), chiều ra phải có rule riêng cho port đích của gói ra (ephemeral port 54321). Không có chuyện NACL tự suy ra "đây là phản hồi của kết nối trước". Vì vậy với NACL, luôn phải cấu hình cả hai chiều một cách tường minh.
+
+Cách nhớ nhanh: SG như bảo vệ nhớ mặt khách đã cho vào, khách đi ra thì gật đầu cho qua luôn. NACL như bảo vệ đổi ca liên tục, mỗi lần khách qua cửa đều phải xuất trình giấy tờ lại từ đầu, cả lúc vào lẫn lúc ra.
 
 ---
 
