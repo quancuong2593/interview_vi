@@ -12,6 +12,7 @@ Tổng cộng **70 câu hỏi** + **5 mẫu giới thiệu bản thân**.
 - [Hành vi & Kỹ năng mềm](#hành-vi-kỹ-năng-mềm) — 12 câu
 - [Thiết kế hệ thống](#thiết-kế-hệ-thống) — 5 câu
 - [Networking — Luồng đi & Concept](#networking-luồng-đi--concept) — 18 câu
+- [Backup & Recovery (bổ sung)](#backup--recovery-bổ-sung) — 3 câu
 
 ---
 
@@ -582,6 +583,26 @@ Gateway Endpoint chỉ dùng cho S3 và DynamoDB, miễn phí, hoạt động b�
 ### Q088 — Giải thích Control Plane và Data Plane qua ví dụ ALB.
 > `networking` · độ khó 3/3
 Control plane là các hoạt động chạy nền, liên tục, không gắn với từng request: ELB service theo dõi node nào còn sống, ALB health-check các target mỗi chu kỳ, và cập nhật DNS record của ALB. Data plane là đường đi của từng request thật: client hỏi DNS nhận IP, gửi TCP tới IP đó, node ALB nhận rồi chọn target forward. Hai tầng này độc lập hoàn toàn — Route 53 không hỏi ALB gì theo từng request, ALB cũng không báo cáo cho Route 53. Hiểu tách bạch hai tầng này giúp trả lời đúng nhiều tình huống, ví dụ vì sao tắt EC2 mà DNS vẫn trả đủ IP.
+
+---
+
+## Backup & Recovery (bổ sung)
+
+### Q089 — Đã có PITR 35 ngày, tại sao còn cần daily backup 30 ngày trong vault? Nghe như trùng lặp.
+> `backup` · độ khó 3/3
+Về thời gian thì 35 ngày bao trùm 30 ngày, nhưng hai cái lưu ở hai nơi khác nhau nên không trùng. PITR nằm bên trong chính RDS instance — nó là snapshot cộng transaction log gắn liền với instance. Vault backup nằm ở một kho tách biệt, ngoài RDS. Sự khác biệt lộ ra khi cả instance bị xóa hoặc hỏng: PITR biến mất theo instance vì nó nằm trong đó, còn vault backup vẫn còn nguyên. Nên chúng bảo vệ hai loại sự cố khác nhau — PITR cho lỗi logic khi instance vẫn sống, vault cho thảm họa khi mất luôn instance. Sự chồng lấn về thời gian là có chủ đích: trong 30 ngày gần nhất ta muốn có cả hai lớp bảo vệ. Câu chốt: they are layers, not duplicates.
+
+---
+
+### Q090 — Hacker xóa sạch RDS instance lúc 3h chiều. PITR bật, retention 35 ngày. Daily vault backup gần nhất là 2h sáng. Khôi phục được tới đâu?
+> `backup` · độ khó 3/3
+Chỉ khôi phục được về bản vault 2h sáng, mất khoảng 13 tiếng dữ liệu. Không dùng được PITR dù nó còn 35 ngày, vì PITR nằm bên trong chính instance đã bị xóa — instance chết thì PITR chết theo. Vault backup nằm ở kho riêng nên sống sót. Nếu vault có bật Vault Lock thì kể cả hacker có quyền admin cũng không xóa được bản backup đó. Tình huống này cho thấy đúng lý do phải có backup tách biệt: PITR chính xác tới giây nhưng không chịu được việc mất cả instance, còn vault kém chính xác hơn nhưng bền hơn trước thảm họa.
+
+---
+
+### Q091 — Phân biệt PITR và daily/monthly backup về đơn vị khôi phục.
+> `backup` · độ khó 2/3
+PITR cho phép khôi phục tới bất kỳ thời điểm nào trong khoảng retention, chính xác tới giây, nhờ giữ transaction log liên tục cộng với snapshot. Daily và monthly backup chỉ khôi phục về các mốc rời rạc — mỗi ngày một bản, mỗi tháng một bản. Ví dụ nếu xóa nhầm dữ liệu lúc 14:37, PITR cho khôi phục về 14:36:59 chỉ mất vài giây dữ liệu, còn daily backup chỉ về được 2h sáng nên mất cả buổi. Đổi lại, PITR chỉ giữ ngắn hạn (RDS tối đa 35 ngày), còn monthly backup giữ được nhiều năm cho compliance. Vì vậy dùng phân tầng: PITR cho độ chính xác ngắn hạn, backup cho độ bền dài hạn.
 
 ---
 
