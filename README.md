@@ -794,4 +794,82 @@ Không. Một EC2, Lambda, hay ECS task tại một thời điểm chỉ gắn �
 
 Gắn role trực tiếp khi một AWS service cần quyền để tự làm việc — EC2 cần đọc S3, RDS cần ghi S3, Lambda cần gọi DynamoDB. Service tự dùng quyền của role được gắn, không cần code gọi gì. Dùng sts:AssumeRole trong code khi cần lấy quyền động, thường là cross-account hoặc đổi quyền linh hoạt — ví dụ app ở account A cần thao tác resource ở account B, code gọi assume role sang một role ở account B để nhận credentials tạm thời. Trong task migration của mình, RDS đọc/ghi S3 dùng service role gắn trực tiếp — RDS tự assume ngầm qua trust policy, mình không viết code assume. Cách nhớ: service tự làm việc trong account mình thì gắn trực tiếp; cần vượt account hoặc đổi quyền theo ngữ cảnh thì assume trong code.
 
+---
 
+### Q104 — Bình thường ECS task tự chạy được không? Ai gọi RunTask?
+> `iam` · độ khó 2/3
+
+ECS task không tự chạy. Nó là thứ bị động, chỉ chạy khi có ai đó gọi lệnh RunTask. Bản thân ECS không có đồng hồ, không tự biết khi nào cần chạy. Các thứ có thể gọi RunTask gồm: EventBridge Scheduler (gọi thẳng, fire-and-forget), Step Functions (gọi kèm theo dõi và retry), Lambda (code tự gọi), ECS Service (giữ số task luôn chạy, dùng cho web chứ không phải batch), hoặc người gõ CLI tay. Task batch theo lịch cần vừa theo lịch vừa theo dõi kết quả, nên dùng chuỗi EventBridge cho lịch, Step Functions cho theo dõi, ECS cho chạy.
+
+---
+
+### Q105 — Tại sao phải dùng Step Functions để orchestrate? Tự orchestrate trong code batch được không?
+> `iam` · độ khó 3/3
+
+Tự orchestrate trong code batch hoàn toàn được — tự viết retry, tự log, tự xử lý lỗi trong code. Nhưng có một trade-off kiến trúc quan trọng: nếu tự orchestrate trong code, thì người điều phối nằm bên trong người bị điều phối. Task chết thì logic điều phối chết theo, mất kiểm soát. Step Functions đứng ngoài ECS, nên ECS chết nó vẫn biết và xử lý được. Dùng Step Functions khi có nhiều bước nối tiếp, cần retry theo loại lỗi mà không muốn viết code, task dài có thể chết giữa chừng, hoặc cần execution history để debug. Không cần khi chỉ một task đơn giản chạy xong là thôi — lúc đó EventBridge gọi thẳng ECS là đủ, thêm Step Functions chỉ tăng phức tạp.
+
+---
+
+### Q106 — iam:PassRole là gì? Task role đã gắn vào ECS rồi thì SFN cần trao quyền gì nữa?
+> `iam` · độ khó 3/3
+
+Đây là chỗ dễ hiểu nhầm nhất. Cách hiểu đúng: các resource đã tồn tại sẵn (như EC2, Lambda đã tạo) thì gắn role trực tiếp. Nhưng ECS task chưa tồn tại — nó được tạo lúc chạy. Nên task role không gắn sẵn được; nó chỉ được đính vào đúng khoảnh khắc task được tạo ra. Người tạo task ở đây là Step Functions (nó gọi RunTask). Lúc tạo task, SFN phải nói gắn role X vào task này, và hành động đính role cho một resource khác chính là thứ cần iam:PassRole. Nói ngắn gọn: PassRole không phải quyền để làm việc, mà là quyền để TRAO role. Người đưa role cần PassRole, người nhận dùng role đó bình thường. Định nghĩa chuẩn: PassRole là quyền cần có khi gán một role cho một AWS resource hoặc service để nó dùng role làm việc.
+
+---
+
+### Q107 — Vì sao AWS bắt phải có iam:PassRole? Nó chống điều gì?
+> `iam` · độ khó 3/3
+
+Chống leo thang đặc quyền (privilege escalation). Tưởng tượng không có PassRole: một kẻ chỉ có quyền chạy task (ecs:RunTask) nhưng bản thân quyền thấp. Nó tạo một task và bảo gắn role Admin vào task đó. Task chạy với quyền Admin, và thế là kẻ quyền thấp vừa mượn được quyền Admin dù bản thân không có. Đây là lỗ hổng nghiêm trọng. PassRole chặn điều này bằng cách tách thành hai quyền kiểm tra riêng: ecs:RunTask cho phép chạy task, iam:PassRole cho phép gắn role cụ thể vào task. Có quyền chạy task không tự động cho quyền gắn role — phải có cả hai. AWS luôn kiểm tra riêng câu hỏi mày có được phép đưa role này không.
+
+---
+
+### Q108 — SFN có ecs:RunTask nhưng thiếu iam:PassRole. Chạy workflow thì task có chạy không, chết ở đâu?
+> `iam` · độ khó 3/3
+
+Task KHÔNG chạy chút nào, chết ngay tại Step Functions trước khi ECS khởi động. Lý do: task role được gắn lúc tạo task. Nếu SFN không có quyền gắn (PassRole), thì lệnh RunTask bị từ chối ngay, task không bao giờ được tạo ra, không có container nào chạy. Lỗi thấy trong execution history đại loại AccessDeniedException not authorized to iam:PassRole. Điểm mấu chốt hay nhầm: PassRole là quyền lúc TẠO, không phải lúc chạy. Phân biệt hai tình huống: thiếu PassRole ở SFN thì task không tạo được, chết tại SFN; còn thiếu sts:AssumeRole ở task role thì task VẪN chạy nhưng fail lúc ghi S3 cross-account. Hai lỗi khác nhau ở hai thời điểm khác nhau.
+
+---
+
+### Q109 — Còn những trường hợp nào khác cần iam:PassRole? Nêu pattern chung.
+> `iam` · độ khó 3/3
+
+PassRole xuất hiện ở mọi chỗ một bên gán role cho một resource hoặc service khác để nó dùng. Kể cả việc tự gắn role vào EC2 của mình qua console cũng cần PassRole — nhiều người không để ý vì admin thường có sẵn quyền này. Công thức nhận diện: nếu X tạo hoặc vận hành Y, và Y cần role Z để hoạt động, thì X cần iam:PassRole cho Z. Lý do luôn giống nhau: chống leo thang đặc quyền.
+
+Bảng các trường hợp thường gặp:
+
+| Service X (bên pass) | Resource Y (bên nhận) | Role Z |
+|---|---|---|
+| Step Functions | ECS task | task role |
+| Bạn (console) | Lambda | execution role |
+| Bạn (console) | EC2 | instance role |
+| Auto Scaling | EC2 mới | instance role |
+| CloudFormation | resource trong stack | service role |
+| CodePipeline | build job | job role |
+
+---
+
+### Q110 — Retry trong Step Functions cấu hình thế nào? Cho ví dụ.
+> `iam` · độ khó 2/3
+
+Retry được cấu hình ngay trong định nghĩa state bằng JSON (Amazon States Language). Các tham số chính: ErrorEquals chọn loại lỗi được retry, IntervalSeconds là thời gian chờ lần đầu, MaxAttempts là số lần thử tối đa, BackoffRate là hệ số tăng thời gian chờ mỗi lần. Backoff tăng dần quan trọng vì nếu lỗi do hệ thống tạm quá tải, đợi lâu hơn cho nó hồi phục; retry dồn dập chỉ làm tệ thêm. Quan trọng: chỉ nên retry lỗi tạm thời (timeout, service busy, network chập chờn), không retry lỗi vĩnh viễn (config sai, xóa nhầm parameter, thiếu permission). Ví dụ SSM parameter bị xóa là lỗi vĩnh viễn, retry 3 lần với backoff 30s 60s 120s thì cả 3 lần parameter vẫn không có, vẫn fail. Nên phân loại lỗi trong ErrorEquals, để lỗi vĩnh viễn fail luôn và báo động nhanh thay vì chờ retry vô ích.
+
+Ví dụ cấu hình retry:
+
+```json
+"Run ECS Batch": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::ecs:runTask.sync",
+  "Retry": [
+    {
+      "ErrorEquals": ["States.Timeout", "ServiceUnavailable"],
+      "IntervalSeconds": 30,
+      "MaxAttempts": 3,
+      "BackoffRate": 2.0
+    }
+  ],
+  "Next": "Done"
+}
+```
+
+---
