@@ -653,3 +653,145 @@ Vì database và log phục vụ hai mục đích khác nhau. Database backup c�
 
 ---
 
+### Q094 — Mô tả toàn bộ luồng migrate data từ Aurora MySQL sang Aurora PostgreSQL.
+> `migration` · độ khó 2/3
+
+Hệ thống cũ tạo DB snapshot và share cross-account sang account mới. Ở account mới, mình restore snapshot thành một Aurora MySQL instance. Sau đó một job chạy trên self-hosted runner (EC2 trong VPC) sẽ export dữ liệu: Aurora MySQL dùng lệnh SELECT INTO OUTFILE S3 để tự ghi thẳng dữ liệu ra S3 dưới dạng CSV/TSV, kèm bước transform theo schema mới sau re-architecture. Từ S3, một job khác gọi aws_s3 extension trên Aurora PostgreSQL để import dữ liệu vào, rồi tạo index và chạy ANALYZE. Cuối cùng verify bằng row count và query. S3 đóng vai trò tầng trung gian, tách rời export và import giữa hai engine khác nhau.
+
+Sơ đồ luồng:
+
+    Account cũ                 Account mới (mình phụ trách hạ tầng)
+    Aurora MySQL
+      │ snapshot + share cross-account
+      ▼
+            ① restore → Aurora MySQL mới
+                        │
+            ② runner ra lệnh: SELECT INTO OUTFILE S3
+               → MySQL TỰ ghi thẳng lên S3 (CSV/TSV)
+                        │
+                        ▼  S3 (tầng trung gian)
+                        │
+            ③ runner ra lệnh: aws_s3 extension
+               → PostgreSQL TỰ đọc từ S3, import vào
+               → tạo index, ANALYZE
+                        │
+            ④ verify: row count, integrity, query
+                        ▼
+                  Aurora PostgreSQL
+
+---
+
+### Q095 — Ai thực sự đọc/ghi S3 trong pipeline này — runner hay database?
+> `migration` · độ khó 3/3
+
+Database, không phải runner. Ở bước export, mình dùng SELECT INTO OUTFILE S3 — đây là tính năng riêng của Aurora MySQL cho phép database tự ghi thẳng kết quả query lên S3. Ở bước import, aws_s3 extension cho Aurora PostgreSQL tự đọc file từ S3. Trong cả hai bước, runner chỉ RA LỆNH (chạy câu SQL), còn dữ liệu không đi qua runner. Đây là lý do phải gắn IAM role vào chính database cluster, không phải vào runner. Nguyên tắc chung để nhớ: ai đụng data thì người đó cần quyền. Database tự đọc/ghi S3 thì gắn role vào database; runner chỉ ra lệnh thì không cần quyền S3.
+
+---
+
+### Q096 — SELECT INTO OUTFILE S3 là gì và cần cấu hình quyền thế nào?
+> `migration` · độ khó 3/3
+
+Đây là tính năng riêng của Aurora MySQL (không có trên MySQL thường) cho phép ghi thẳng kết quả một câu SELECT lên S3 dưới dạng file, thay vì trả kết quả về client. Vì database tự đụng S3, phải gắn một IAM role vào Aurora MySQL cluster. Role cần quyền s3:PutObject lên bucket, và trust policy cho phép RDS service assume. Trong RDS console, gắn role vào cluster qua mục Manage IAM roles với feature s3Export. Điểm đối xứng đáng nhớ: bước export MySQL ghi S3 dùng feature s3Export, bước import PostgreSQL đọc S3 dùng feature s3Import — cả hai đều là role gắn vào database, database tự đụng S3, runner chỉ ra lệnh.
+
+Ví dụ — Aurora MySQL tự ghi thẳng lên S3:
+
+```sql
+SELECT * FROM transaction_table
+INTO OUTFILE S3 's3://my-bucket/export/transaction'
+FORMAT CSV;
+```
+
+---
+
+### Q097 — aws_s3 extension hoạt động thế nào? Cài ở đâu, cần quyền gì?
+> `migration` · độ khó 2/3
+
+aws_s3 là extension của PostgreSQL do AWS phát triển, cài ở phía RDS PostgreSQL chứ không phải phía S3. Nó cung cấp hàm SQL để import/export giữa bảng trong database và file trên S3. Để dùng: bật extension bằng CREATE EXTENSION aws_s3 CASCADE (CASCADE tự cài luôn aws_commons phụ thuộc), rồi gọi hàm table_import_from_s3 để nạp dữ liệu. Quan trọng: phải gắn IAM role có quyền s3:GetObject vào Aurora PostgreSQL cluster với feature s3Import, vì chính database đọc S3 chứ không phải client. Nếu thiếu role này, câu lệnh chạy sẽ báo lỗi quyền.
+
+Ví dụ — bật extension và import từ S3:
+
+```sql
+CREATE EXTENSION aws_s3 CASCADE;
+
+SELECT aws_s3.table_import_from_s3(
+   'transaction_table',            -- bảng đích
+   '',                             -- cột (rỗng = tất cả)
+   '(format csv, header true)',    -- định dạng
+   'my-bucket',                    -- bucket
+   'export/transaction.csv',       -- path
+   'ap-southeast-1'                -- region
+);
+```
+
+---
+
+### Q098 — Ba loại truy cập S3 trong task migration này khác nhau thế nào?
+> `migration` · độ khó 3/3
+
+Task này có ba mắt xích đụng tới quyền, mỗi cái cơ chế khác nhau. Một, snapshot share cross-account — không qua S3, mà qua cơ chế snapshot sharing (thêm account ID vào danh sách share, nếu mã hóa thì share cả KMS key). Hai, Aurora MySQL ghi S3 khi export — role gắn vào MySQL cluster, feature s3Export, quyền PutObject. Ba, Aurora PostgreSQL đọc S3 khi import — role gắn vào PostgreSQL cluster, feature s3Import, quyền GetObject. Điểm mấu chốt: hai database có hai role riêng biệt, không dùng chung, vì mỗi cluster tự đụng S3 độc lập. Runner không cần quyền S3 vì nó chỉ ra lệnh SQL.
+
+Bảng tóm tắt:
+
+| Ai đụng gì | Cơ chế | Feature | Quyền |
+|---|---|---|---|
+| Snapshot cross-account | snapshot sharing | — | + KMS nếu mã hóa |
+| Aurora MySQL → S3 | role gắn vào cluster | s3Export | PutObject |
+| Aurora PostgreSQL ← S3 | role gắn vào cluster | s3Import | GetObject |
+| Runner | chỉ ra lệnh SQL | — | không cần S3 |
+
+---
+
+### Q099 — Share snapshot cross-account hoạt động thế nào, đặc biệt khi snapshot mã hóa?
+> `iam` · độ khó 3/3
+
+Với snapshot không mã hóa: ở account cũ, chọn snapshot rồi thêm account ID của account mới vào danh sách share — thao tác này chỉ chia sẻ quyền truy cập metadata, không copy dữ liệu. Account mới thấy snapshot trong danh sách shared và restore được. Với snapshot mã hóa bằng KMS thì phức tạp hơn: KMS key mặc định (aws/rds) KHÔNG share cross-account được, nên bắt buộc phải mã hóa bằng customer-managed KMS key. Sau đó share cả hai thứ — snapshot (thêm account ID) và KMS key (sửa key policy cho phép account mới dùng). Account mới thường re-encrypt bằng key của chính mình sau khi restore để không phụ thuộc key account cũ. Best practice: luôn dùng customer-managed key nếu có ý định share cross-account.
+
+---
+
+### Q100 — Same-account và cross-account access khác nhau thế nào về policy?
+> `iam` · độ khó 2/3
+
+Trong cùng account, chỉ cần cấu hình một chiều — identity-based policy ở phía gửi yêu cầu. Ví dụ EC2 ghi S3 cùng account, chỉ cần IAM role của EC2 có s3:PutObject là đủ, miễn không vướng Deny nào. Cross-account thì bắt buộc hai chiều: chiều một, identity policy ở account nguồn cho phép gửi yêu cầu; chiều hai, resource policy ở account đích (ví dụ bucket policy) cho phép account nguồn đi vào. Thiếu bất kỳ chiều nào cũng bị Access Denied. Cách nhớ: same-account tin nhau sẵn nên một chiều đủ; cross-account phải cả hai bên cùng đồng ý mở cửa.
+
+---
+
+### Q101 — IAM role thường và role cho phép assume khác nhau ở đâu?
+> `iam` · độ khó 2/3
+
+Về bản chất cả hai giống hệt nhau, chỉ khác giá trị Principal trong trust policy — tức là ai được phép dùng role này. Role cho AWS service (như EC2, RDS, Lambda) có Principal là tên service, ví dụ Service rds.amazonaws.com. Role cho phép entity khác assume có Principal là ARN, ví dụ AWS là arn của một role hoặc account khác. Một role còn có thể vừa cho service vừa cho role khác dùng, bằng cách khai báo cả Service lẫn AWS trong Principal. Điểm cần nhớ: trust policy trả lời câu hỏi AI ĐƯỢC MƯỢN role này, còn permission policy trả lời role này LÀM ĐƯỢC GÌ. Hai cái độc lập.
+
+Trust policy cho RDS service:
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": { "Service": "rds.amazonaws.com" },
+  "Action": "sts:AssumeRole"
+}
+```
+
+Trust policy cho role khác assume:
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": { "AWS": "arn:aws:iam::123456789012:role/Role-A" },
+  "Action": "sts:AssumeRole"
+}
+```
+
+---
+
+### Q102 — Một service có gắn được nhiều IAM role cùng lúc không?
+> `iam` · độ khó 2/3
+
+Không. Một EC2, Lambda, hay ECS task tại một thời điểm chỉ gắn được một IAM role. Muốn có nhiều quyền thì gộp nhiều policy vào chung một role — đây là cách chuẩn và khuyên dùng. Nếu bắt buộc phải đứng tên nhiều role khác nhau cho các hệ thống khác nhau, thì gắn một role gốc cho service, rồi trong code gọi sts:AssumeRole để tạm thời lấy quyền role khác. Lưu ý về giới hạn: một role có quota mặc định về số managed policy đính kèm (hiện là 20, có thể xin tăng), cộng inline policy. Với đa số trường hợp, gộp policy vào một role là đủ.
+
+---
+
+### Q103 — Khi nào dùng service role gắn trực tiếp, khi nào dùng sts:AssumeRole trong code?
+> `iam` · độ khó 3/3
+
+Gắn role trực tiếp khi một AWS service cần quyền để tự làm việc — EC2 cần đọc S3, RDS cần ghi S3, Lambda cần gọi DynamoDB. Service tự dùng quyền của role được gắn, không cần code gọi gì. Dùng sts:AssumeRole trong code khi cần lấy quyền động, thường là cross-account hoặc đổi quyền linh hoạt — ví dụ app ở account A cần thao tác resource ở account B, code gọi assume role sang một role ở account B để nhận credentials tạm thời. Trong task migration của mình, RDS đọc/ghi S3 dùng service role gắn trực tiếp — RDS tự assume ngầm qua trust policy, mình không viết code assume. Cách nhớ: service tự làm việc trong account mình thì gắn trực tiếp; cần vượt account hoặc đổi quyền theo ngữ cảnh thì assume trong code.
+
+
