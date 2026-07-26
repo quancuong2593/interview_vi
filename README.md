@@ -887,3 +887,89 @@ Mấu chốt: SG không thuộc về task, mà là resource độc lập tồn t
 Không phải "SG nối SG", mà là inbound rule của SG-RDS lấy SG-ECS làm source thay vì IP. Vì SG là stateful nên chỉ cần lo chiều mở kết nối: SG của ECS cần outbound cho phép đi tới port database (3306 cho MySQL, 5432 cho PostgreSQL), và SG của RDS cần inbound cho phép từ sg-ecs tới port đó. Không cần rule chiều về vì stateful tự cho response quay lại. Thực tế outbound của SG-ECS thường để mặc định allow all, nên chỗ thật sự cấu hình là inbound của SG-RDS với source là sg-ecs. Lý do dùng SG reference thay vì IP: ECS Fargate task có IP thay đổi mỗi lần chạy, nếu ghi cứng IP thì lần sau task ra IP khác sẽ bị chặn; reference SG thì task nào mang SG đó cũng vào được, không phải sửa rule. Câu chốt khi phỏng vấn: reference bằng SG chứ không phải IP, vì Fargate IP thay đổi.
 
 ---
+
+### Q113 — Giải thích luồng của một request đi qua kiến trúc edge (Route53, CloudFront, Function, WAF, OAC, S3).
+> `cloudfront` · độ khó 2/3
+
+User gõ domain, Route 53 phân giải thành địa chỉ CloudFront qua một bản ghi A Alias. Request tới CloudFront, đã gắn sẵn ACM certificate để chạy HTTPS. WAF kiểm request ngay tại edge, độc hại thì chặn luôn, sạch thì đi tiếp. Sau đó CloudFront Function ở Viewer Request phán định theo path: một số path trả response ngay tại edge như redirect 302, HTTP 426, hoặc JSON cố định — không xuống origin; path còn lại forward xuống S3. S3 được khóa bằng OAC nên chỉ CloudFront vào được. Song song, CloudFront log và WAF log ghi ra S3 để Athena phân tích sau. Điểm cốt lõi: các path được xử lý tại edge không bao giờ chạm origin, đó là mục tiêu giảm latency và tránh gọi origin không cần thiết.
+
+Sơ đồ:
+
+    User gõ www.dev.web.com
+       │
+       ① Route 53: domain → CloudFront
+       ② ACM: cho phép HTTPS (gắn sẵn vào CloudFront)
+       ▼
+       ③ CloudFront nhận request
+       ④ WAF: độc hại → chặn; sạch → tiếp
+       ▼
+       ⑤ CF Function (Viewer Request) phán định path:
+          /abc      → 302 sang /xyz      ┐ trả NGAY,
+          /hihi/*    → 426                ├ không
+          /haha/hehe → JSON force_update  ┘ xuống S3
+          còn lại    → forward xuống S3 ↓
+       ▼
+       ⑥ S3 (qua OAC): file tĩnh, fallback 404/index.html
+       ⑦ Athena: phân tích log (chạy sau)
+
+---
+
+### Q114 — Viewer Request và Origin Request khác nhau thế nào? Vì sao đặt function ở Viewer Request?
+> `cloudfront` · độ khó 3/3
+
+CloudFront có các điểm chạy code, quan trọng là hai cái. Viewer Request chạy TRƯỚC cache — mọi request đều đi qua nó. Origin Request chỉ chạy khi cache MISS, tức là khi CloudFront phải đi xuống origin lấy nội dung. Function phán định path phải đặt ở Viewer Request, vì mình muốn phán định MỌI request, kể cả request mà cache đã có sẵn. Nếu đặt ở Origin Request, những request cache hit sẽ bỏ qua function hoàn toàn — routing sẽ sai với các request đó. Cách nhớ: Viewer Request gác cửa mọi người ra vào; Origin Request chỉ gác lúc phải xuống kho lấy hàng. Muốn kiểm soát toàn bộ thì gác ở cửa ngoài, tức Viewer Request.
+
+    User request
+       ▼
+    ① VIEWER REQUEST  ← function ở đây (chạy trước cache, mọi request qua)
+       ▼
+    Cache có sẵn?
+       ├── có → trả luôn (nếu function ở origin request thì bị bỏ qua)
+       └── không ↓
+    ② ORIGIN REQUEST  (chỉ chạy khi cache miss)
+       ▼
+    Origin (S3)
+
+---
+
+### Q115 — Vì sao dùng CloudFront Functions mà không dùng Lambda@Edge?
+> `cloudfront` · độ khó 3/3
+
+Vì logic ở task này rất nhẹ: chỉ redirect, trả HTTP 426, trả một JSON nhỏ. CloudFront Functions chạy ngay tại edge location, thời gian sub-millisecond, và rẻ hơn nhiều. Lambda@Edge chạy ở regional edge cache nên thêm độ trễ và chi phí. Giới hạn của CloudFront Functions: chỉ JavaScript, không gọi được network, không truy cập filesystem, thời gian chạy rất ngắn. Nhưng logic của mình không cần mấy thứ đó nên giới hạn không ảnh hưởng gì. Mình sẽ chọn Lambda@Edge nếu cần gọi API bên ngoài, đọc secret, xử lý nặng, hoặc thao tác response body lớn. Nguyên tắc: logic nhẹ và không cần network thì dùng CloudFront Functions cho nhanh và rẻ; cần khả năng mạnh hơn thì mới lên Lambda@Edge.
+
+---
+
+### Q116 — Ba mã HTTP dùng trong task edge routing có ý nghĩa gì? 302, 426, và JSON force_update?
+> `cloudfront` · độ khó 2/3
+
+302 là redirect tạm thời — báo client chuyển sang URL khác, nhưng không cache vĩnh viễn, nên sau này đổi đích được. Khác với 301 là redirect vĩnh viễn, browser nhớ luôn và khó đổi. Chọn 302 khi đích có thể thay đổi về sau. 426 là Upgrade Required — báo client cần nâng cấp, thường dùng để buộc app cũ phải update lên phiên bản mới trước khi tiếp tục. JSON cố định với force_update true cũng phục vụ mục đích tương tự: trả về một nội dung báo cho client biết cần cập nhật. Điểm chung của cả ba: đây đều là response trả NGAY tại edge bằng CloudFront Function, không cần gọi xuống origin, nên rất nhanh.
+
+---
+
+### Q117 — ACM cấp certificate cho CloudFront, nhưng lại thêm một bản ghi vào Route 53. Vậy trong Route 53 có 2 bản ghi thì phân giải thế nào?
+> `cloudfront` · độ khó 3/3
+
+Hai bản ghi có TÊN khác nhau hoàn toàn nên không cạnh tranh nhau. Bản ghi thứ nhất là A Alias, tên là www.dev.web.com, trỏ tới CloudFront — dùng để định tuyến traffic thật của user. Bản ghi thứ hai là CNAME validation do ACM yêu cầu, tên là một chuỗi ngẫu nhiên kiểu _abc123.dev.web.com, trỏ tới acm-validations.aws — chỉ ACM đọc nó để chứng minh mình sở hữu domain. DNS phân giải theo tên chính xác: user hỏi www.dev.web.com thì ra CloudFront, ACM hỏi _abc123.dev.web.com thì ra validation. Không ai hỏi trùng tên nên không bao giờ xung đột. Giống danh bạ có hai tên khác nhau, tra tên nào ra số nấy.
+
+---
+
+### Q118 — DNS validation của ACM hoạt động thế nào và vì sao chứng minh được quyền sở hữu domain?
+> `iam` · độ khó 2/3
+
+ACM cần chắc chắn người xin certificate thật sự sở hữu domain, tránh việc ai cũng xin được cert cho domain của người khác. Cách chứng minh: ACM đưa một bản ghi CNAME đặc biệt với tên ngẫu nhiên, người xin phải thêm nó vào DNS của domain. Logic là chỉ người kiểm soát được DNS của domain mới thêm được bản ghi vào đó, nên nếu thêm được thì chứng tỏ sở hữu domain, ACM mới cấp cert. Nếu ai đó cố xin cert cho google.com, họ không thêm được bản ghi vào DNS của Google nên ACM không thấy và không cấp. Hai chi tiết hay bị hỏi: certificate cho CloudFront bắt buộc phải ở region us-east-1 dù CloudFront là global; và nên giữ bản ghi validation lại đừng xóa, vì ACM auto-renew certificate và sẽ kiểm tra lại bản ghi đó lúc gia hạn.
+
+---
+
+### Q119 — Xin một certificate cho nhiều domain cùng lúc thì ACM tạo mấy bản ghi validation?
+> `iam` · độ khó 2/3
+
+Mỗi domain một bản ghi validation riêng. Ví dụ xin một cert cho www.dev.web.com, api.dev.web.com, admin.dev.web.com thì ACM tạo ba bản ghi validation, mỗi domain một cái. Lý do: ACM phải chứng minh quyền sở hữu cho TỪNG domain riêng biệt — sở hữu www không tự động nghĩa là sở hữu api hay admin, vì về lý thuyết chúng có thể thuộc DNS zone khác nhau. Nên mỗi domain cần một bản ghi để kiểm tra độc lập. Chỉ khi tất cả bản ghi đều được xác minh thì cert mới được cấp cho toàn bộ danh sách domain.
+
+---
+
+### Q120 — Named query trong Athena là gì và dùng để làm gì trong task này?
+> `athena` · độ khó 1/3
+
+Named query là một câu SQL được đặt tên và lưu sẵn trong Athena, để dùng lại nhiều lần mà không phải gõ lại từ đầu. Trong task edge routing, CloudFront access log và WAF log được ghi ra S3, và mình tạo các named query để phân tích: đếm request theo từng path để kiểm tra routing có đúng không, xem traffic bất thường, debug khi có path trả response sai. Lợi ích của việc lưu sẵn là những query hay dùng để giám sát và debug luôn có sẵn, cả team dùng chung một câu chuẩn thay vì mỗi người tự viết lại. Đây là phần observability của kiến trúc — bật log rồi query log để hiểu hệ thống đang chạy thế nào.
+
+---
