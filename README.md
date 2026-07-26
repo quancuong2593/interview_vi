@@ -873,3 +873,17 @@ Ví dụ cấu hình retry:
 ```
 
 ---
+
+### Q111 — SG của ECS task chưa tồn tại (task tạo lúc chạy) thì làm sao SG của RDS tham chiếu tới nó được?
+> `networking` · độ khó 3/3
+
+Mấu chốt: SG không thuộc về task, mà là resource độc lập tồn tại sẵn từ trước, thường tạo trong Terraform lúc dựng hạ tầng. SG có một sg-id cố định không đổi. Khi ECS task sinh ra, nó được GÁN SG đó vào — giống hệt cách task được gán task role. Nên khi cấu hình inbound rule của SG-RDS với source là sg-ecs, mình tham chiếu tới SG đã tồn tại sẵn, không phải tham chiếu tới task. Task chưa chạy cũng không sao: rule vẫn hợp lệ, chỉ là chưa có ai match; task nào sinh ra mang sg-ecs thì mới match và được vào. Đây chính là lý do dùng SG reference thay vì IP: IP thuộc về task nên task sinh chết thì IP đổi liên tục, còn SG tồn tại độc lập nên là danh tính ổn định đại diện cho mọi task cùng loại. Cách nói chuẩn: SG được associate với task, không phải task sở hữu SG.
+
+---
+
+### Q112 — Cấu hình Security Group cho ECS batch chạm RDS thế nào? Chiều nào cần rule gì?
+> `networking` · độ khó 2/3
+
+Không phải "SG nối SG", mà là inbound rule của SG-RDS lấy SG-ECS làm source thay vì IP. Vì SG là stateful nên chỉ cần lo chiều mở kết nối: SG của ECS cần outbound cho phép đi tới port database (3306 cho MySQL, 5432 cho PostgreSQL), và SG của RDS cần inbound cho phép từ sg-ecs tới port đó. Không cần rule chiều về vì stateful tự cho response quay lại. Thực tế outbound của SG-ECS thường để mặc định allow all, nên chỗ thật sự cấu hình là inbound của SG-RDS với source là sg-ecs. Lý do dùng SG reference thay vì IP: ECS Fargate task có IP thay đổi mỗi lần chạy, nếu ghi cứng IP thì lần sau task ra IP khác sẽ bị chặn; reference SG thì task nào mang SG đó cũng vào được, không phải sửa rule. Câu chốt khi phỏng vấn: reference bằng SG chứ không phải IP, vì Fargate IP thay đổi.
+
+---
